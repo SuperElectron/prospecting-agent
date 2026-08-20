@@ -1,0 +1,43 @@
+# OMC state
+.omc/
+
+# Cache (cloned reference repos, temp data)
+.cache/
+
+# Dependencies
+node_modules/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+credentials.json
+token.json
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Trigger.dev
+.trigger/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# Local data
+data/local/
+*.csv.bak
