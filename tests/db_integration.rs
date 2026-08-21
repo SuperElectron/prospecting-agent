@@ -420,12 +420,12 @@ async fn email_dedupe_migration_collapses_multiple_loser_sequence_states() {
     let loser_early = uuid::Uuid::new_v4();
     let loser_late = uuid::Uuid::new_v4();
     for (id, email, offset_secs, status) in [
-        (winner_id, base.clone(), 0i64, "in_sequence"),
-        (loser_early, base.to_uppercase(), 60, "in_sequence"),
+        (winner_id, base.clone(), 0.0f64, "in_sequence"),
+        (loser_early, base.to_uppercase(), 60.0, "in_sequence"),
         (
             loser_late,
             format!("Triple-{stamp}@Acme.example.com"),
-            120,
+            120.0,
             "opted_out",
         ),
     ] {
@@ -436,7 +436,7 @@ async fn email_dedupe_migration_collapses_multiple_loser_sequence_states() {
         .bind(id)
         .bind(email)
         .bind(status)
-        .bind(offset_secs as f64)
+        .bind(offset_secs)
         .execute(&mut *tx)
         .await
         .unwrap();
