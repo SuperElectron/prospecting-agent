@@ -5,6 +5,14 @@ use serde_json::json;
 
 use crate::config::Secret;
 
+fn null_to_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 const DEFAULT_BASE_URL: &str = "https://api.tavily.com";
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 const MAX_ATTEMPTS: u32 = 3;
@@ -19,6 +27,22 @@ pub enum TavilyError {
     Status { status: u16, body: String },
     #[error("tavily response shape unexpected: {0}")]
     Decode(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Topic {
+    #[default]
+    General,
+    News,
+}
+
+impl Topic {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::General => "general",
+            Self::News => "news",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +64,7 @@ impl SearchDepth {
 pub struct SearchOptions {
     pub max_results: u8,
     pub depth: SearchDepth,
+    pub topic: Topic,
     pub recency_days: u16,
 }
 
@@ -48,6 +73,7 @@ impl Default for SearchOptions {
         Self {
             max_results: DEFAULT_MAX_RESULTS,
             depth: SearchDepth::Basic,
+            topic: Topic::General,
             recency_days: DEFAULT_RECENCY_DAYS,
         }
     }
@@ -55,13 +81,13 @@ impl Default for SearchOptions {
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SearchResult {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub url: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub content: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub score: f64,
     pub published_date: Option<String>,
 }
@@ -99,46 +125,59 @@ impl TavilyClient {
     }
 
     pub async fn search(&self, query: &str, options: &SearchOptions) -> Result<SearchResponse, TavilyError> {
-        let url = format!("{}/search", self.base_url);
-        let body = json!({
+        let mut body = json!({
             "query": query,
             "search_depth": options.depth.as_str(),
+            "topic": options.topic.as_str(),
             "max_results": options.max_results,
             "include_answer": true,
             "include_raw_content": false,
-            "days": options.recency_days,
         });
-        let mut last_error: Option<TavilyError> = None;
-        for attempt in 0..MAX_ATTEMPTS {
+        if options.topic == Topic::News {
+            body["days"] = json!(options.recency_days);
+        }
+        let raw = self.post_json(&body).await?;
+        Self::decode(&raw)
+    }
+
+    async fn post_json(&self, body: &serde_json::Value) -> Result<String, TavilyError> {
+        let url = format!("{}/search", self.base_url);
+        let mut attempt = 0;
+        loop {
             if attempt > 0 {
+                tracing::warn!(attempt, %url, "retrying tavily request");
                 tokio::time::sleep(Duration::from_millis(500 * u64::from(attempt))).await;
             }
             let response = self
                 .http
                 .post(&url)
                 .bearer_auth(self.api_key.expose())
-                .json(&body)
+                .json(body)
                 .send()
                 .await;
-            match response {
-                Ok(resp) if resp.status().is_success() => {
-                    let raw = resp.text().await?;
-                    return serde_json::from_str(&raw).map_err(|e| TavilyError::Decode(e.to_string()));
-                }
+            let error = match response {
+                Ok(resp) if resp.status().is_success() => return Ok(resp.text().await?),
                 Ok(resp) => {
                     let status = resp.status().as_u16();
                     let body = resp.text().await.unwrap_or_default();
                     let error = TavilyError::Status { status, body };
                     if status == 429 || (500..600).contains(&status) {
-                        last_error = Some(error);
+                        error
                     } else {
                         return Err(error);
                     }
                 }
-                Err(e) => last_error = Some(TavilyError::Http(e)),
+                Err(e) => TavilyError::Http(e),
+            };
+            attempt += 1;
+            if attempt >= MAX_ATTEMPTS {
+                return Err(error);
             }
         }
-        Err(last_error.unwrap_or(TavilyError::Decode("no attempts made".into())))
+    }
+
+    fn decode<T: serde::de::DeserializeOwned>(raw: &str) -> Result<T, TavilyError> {
+        serde_json::from_str(raw).map_err(|e| TavilyError::Decode(e.to_string()))
     }
 }
 
@@ -161,9 +200,9 @@ mod tests {
             .and(body_partial_json(serde_json::json!({
                 "query": "Acme funding",
                 "search_depth": "basic",
+                "topic": "general",
                 "max_results": 5,
                 "include_answer": true,
-                "days": 30,
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "answer": "Acme raised a Series B.",
@@ -210,6 +249,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn persistent_rate_limits_exhaust_exactly_max_attempts() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/search"))
+            .respond_with(ResponseTemplate::new(429))
+            .expect(3)
+            .mount(&server)
+            .await;
+        let err = client(&server)
+            .search("q", &SearchOptions::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TavilyError::Status { status: 429, .. }));
+    }
+
+    #[tokio::test]
+    async fn null_fields_in_results_decode_to_defaults() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "answer": null,
+                "results": [{"title": null, "url": null, "content": null, "score": null,
+                             "published_date": null}],
+            })))
+            .mount(&server)
+            .await;
+        let response = client(&server)
+            .search("q", &SearchOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(response.results[0].title, "");
+        assert!(response.results[0].score.abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
     async fn client_errors_are_typed_and_not_retried() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -232,6 +307,7 @@ mod tests {
             .and(path("/search"))
             .and(body_partial_json(serde_json::json!({
                 "search_depth": "advanced",
+                "topic": "news",
                 "max_results": 8,
                 "days": 90,
             })))
@@ -244,6 +320,7 @@ mod tests {
         let options = SearchOptions {
             max_results: 8,
             depth: SearchDepth::Advanced,
+            topic: Topic::News,
             recency_days: 90,
         };
         client(&server).search("q", &options).await.unwrap();

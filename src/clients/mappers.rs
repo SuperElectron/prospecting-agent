@@ -1,15 +1,19 @@
 use crate::clients::apollo::{ApolloOrganization, ApolloPerson};
+use crate::domain;
 use crate::domain::{Company, Contact, ContactSource, Seniority};
 
 pub fn seniority_from_apollo(raw: &str) -> Option<Seniority> {
     match raw.to_lowercase().as_str() {
         "c_suite" | "c-suite" | "csuite" => Some(Seniority::CSuite),
         "founder" | "owner" => Some(Seniority::Founder),
-        "vp" | "head" => Some(Seniority::Vp),
+        "vp" | "head" | "partner" => Some(Seniority::Vp),
         "director" => Some(Seniority::Director),
         "manager" => Some(Seniority::Manager),
         "senior" | "entry" | "intern" | "individual" => Some(Seniority::Individual),
-        _ => None,
+        unknown => {
+            tracing::debug!(seniority = unknown, "unmapped apollo seniority value");
+            None
+        }
     }
 }
 
@@ -26,11 +30,7 @@ pub fn contact_from_person(person: &ApolloPerson) -> Contact {
     contact.seniority = person.seniority.as_deref().and_then(seniority_from_apollo);
     contact.linkedin_url.clone_from(&person.linkedin_url);
     contact.crm_id = Some(person.id.clone()).filter(|id| !id.is_empty());
-    contact.company_domain = person
-        .organization
-        .as_ref()
-        .and_then(org_domain)
-        .map(|d| crate::domain::normalize_domain(&d));
+    contact.company_domain = person.organization.as_ref().and_then(org_domain);
     contact
 }
 
@@ -52,7 +52,7 @@ fn org_domain(org: &ApolloOrganization) -> Option<String> {
         .clone()
         .filter(|d| !d.is_empty())
         .or_else(|| org.website_url.clone().filter(|u| !u.is_empty()))
-        .map(|d| crate::domain::normalize_domain(&d))
+        .map(|d| domain::normalize_domain(&d))
         .filter(|d| !d.is_empty())
 }
 
@@ -149,11 +149,23 @@ mod tests {
     }
 
     #[test]
+    fn obfuscated_free_tier_person_maps_to_sparse_contact() {
+        let raw = r#"{"id":"p-1","first_name":"Jane","email":null,"seniority":null,"organization":null,"departments":null}"#;
+        let person: ApolloPerson = serde_json::from_str(raw).unwrap();
+        let contact = contact_from_person(&person);
+        assert_eq!(contact.email, None);
+        assert_eq!(contact.seniority, None);
+        assert_eq!(contact.company_domain, None);
+        assert_eq!(contact.crm_id.as_deref(), Some("p-1"));
+    }
+
+    #[test]
     fn seniority_ladder_covers_apollo_vocabulary() {
         assert_eq!(seniority_from_apollo("c_suite"), Some(Seniority::CSuite));
         assert_eq!(seniority_from_apollo("Founder"), Some(Seniority::Founder));
         assert_eq!(seniority_from_apollo("head"), Some(Seniority::Vp));
         assert_eq!(seniority_from_apollo("director"), Some(Seniority::Director));
+        assert_eq!(seniority_from_apollo("partner"), Some(Seniority::Vp));
         assert_eq!(seniority_from_apollo("senior"), Some(Seniority::Individual));
         assert_eq!(seniority_from_apollo("mystery"), None);
     }

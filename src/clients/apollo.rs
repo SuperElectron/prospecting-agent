@@ -4,11 +4,21 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::config::Secret;
+use crate::domain;
+
+fn null_to_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
 
 const DEFAULT_BASE_URL: &str = "https://api.apollo.io";
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 const MAX_ATTEMPTS: u32 = 3;
 const DEFAULT_PER_PAGE: u8 = 25;
+const MAX_PER_PAGE: u8 = 100;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApolloError {
@@ -22,7 +32,7 @@ pub enum ApolloError {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
 pub struct ApolloPerson {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub id: String,
     pub first_name: Option<String>,
     pub last_name: Option<String>,
@@ -31,14 +41,14 @@ pub struct ApolloPerson {
     pub email_status: Option<String>,
     pub linkedin_url: Option<String>,
     pub seniority: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub departments: Vec<String>,
     pub organization: Option<ApolloOrganization>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
 pub struct ApolloOrganization {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub id: String,
     pub name: Option<String>,
     pub website_url: Option<String>,
@@ -50,7 +60,7 @@ pub struct ApolloOrganization {
     pub country: Option<String>,
     pub linkedin_url: Option<String>,
     pub founded_year: Option<u16>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub keywords: Vec<String>,
     pub short_description: Option<String>,
     pub latest_funding_stage: Option<String>,
@@ -58,19 +68,10 @@ pub struct ApolloOrganization {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct Pagination {
-    pub page: u32,
-    pub per_page: u32,
-    pub total_entries: u64,
-    pub total_pages: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct PeopleSearchResponse {
     #[serde(default)]
     pub people: Vec<ApolloPerson>,
     pub total_entries: Option<u64>,
-    pub pagination: Option<Pagination>,
 }
 
 #[derive(Deserialize)]
@@ -96,11 +97,11 @@ pub struct PeopleSearchParams {
 impl PeopleSearchParams {
     fn body(&self) -> serde_json::Value {
         let mut body = json!({
-            "q_organization_domains_list": self.organization_domains,
-            "per_page": self.per_page.unwrap_or(DEFAULT_PER_PAGE),
+            "per_page": self.per_page.unwrap_or(DEFAULT_PER_PAGE).min(MAX_PER_PAGE),
             "page": self.page.unwrap_or(1),
         });
         let extras = [
+            ("q_organization_domains_list", &self.organization_domains),
             ("person_titles", &self.person_titles),
             ("person_seniorities", &self.person_seniorities),
             ("person_departments", &self.person_departments),
@@ -140,9 +141,10 @@ impl ApolloClient {
 
     async fn post_json(&self, endpoint: &str, body: &serde_json::Value) -> Result<String, ApolloError> {
         let url = format!("{}{endpoint}", self.base_url);
-        let mut last_error: Option<ApolloError> = None;
-        for attempt in 0..MAX_ATTEMPTS {
+        let mut attempt = 0;
+        loop {
             if attempt > 0 {
+                tracing::warn!(attempt, %url, "retrying apollo request");
                 tokio::time::sleep(Duration::from_millis(500 * u64::from(attempt))).await;
             }
             let response = self
@@ -152,22 +154,25 @@ impl ApolloClient {
                 .json(body)
                 .send()
                 .await;
-            match response {
+            let error = match response {
                 Ok(resp) if resp.status().is_success() => return Ok(resp.text().await?),
                 Ok(resp) => {
                     let status = resp.status().as_u16();
                     let body = resp.text().await.unwrap_or_default();
                     let error = ApolloError::Status { status, body };
                     if status == 429 || (500..600).contains(&status) {
-                        last_error = Some(error);
+                        error
                     } else {
                         return Err(error);
                     }
                 }
-                Err(e) => last_error = Some(ApolloError::Http(e)),
+                Err(e) => ApolloError::Http(e),
+            };
+            attempt += 1;
+            if attempt >= MAX_ATTEMPTS {
+                return Err(error);
             }
         }
-        Err(last_error.unwrap_or(ApolloError::Decode("no attempts made".into())))
     }
 
     fn decode<T: serde::de::DeserializeOwned>(raw: &str) -> Result<T, ApolloError> {
@@ -192,7 +197,7 @@ impl ApolloClient {
     }
 
     pub async fn enrich_organization(&self, domain: &str) -> Result<Option<ApolloOrganization>, ApolloError> {
-        let body = json!({"domain": crate::domain::normalize_domain(domain)});
+        let body = json!({"domain": domain::normalize_domain(domain)});
         let raw = self.post_json("/v1/organizations/enrich", &body).await?;
         let parsed: OrgEnrichResponse = Self::decode(&raw)?;
         Ok(parsed.organization)
@@ -246,7 +251,6 @@ mod tests {
         assert_eq!(response.people.len(), 1);
         assert_eq!(response.people[0].email.as_deref(), Some("jane@acme.io"));
         assert_eq!(response.total_entries, Some(1));
-        assert!(response.pagination.is_none());
     }
 
     #[tokio::test]
@@ -259,6 +263,30 @@ mod tests {
         assert!(body.get("person_titles").is_none());
         assert!(body.get("person_seniorities").is_none());
         assert!(body.get("person_departments").is_none());
+        let unscoped = PeopleSearchParams::default().body();
+        assert!(unscoped.get("q_organization_domains_list").is_none());
+    }
+
+    #[tokio::test]
+    async fn per_page_is_clamped_to_the_apollo_maximum() {
+        let params = PeopleSearchParams {
+            per_page: Some(250),
+            ..PeopleSearchParams::default()
+        };
+        assert_eq!(params.body()["per_page"], 100);
+    }
+
+    #[tokio::test]
+    async fn persistent_server_errors_exhaust_exactly_max_attempts() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/people/match"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(3)
+            .mount(&server)
+            .await;
+        let err = client(&server).match_person("jane@acme.io").await.unwrap_err();
+        assert!(matches!(err, ApolloError::Status { status: 503, .. }));
     }
 
     #[tokio::test]
