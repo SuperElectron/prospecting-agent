@@ -1,3 +1,6 @@
+use prospecting_agent::observability;
+
 fn main() {
-    println!("Hello, world!");
+    observability::init_tracing("info");
+    tracing::info!("prospecting-agent starting");
 }
