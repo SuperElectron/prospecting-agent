@@ -1,3 +1,4 @@
+pub mod clients;
 pub mod config;
 pub mod db;
 pub mod domain;
