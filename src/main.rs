@@ -27,6 +27,16 @@ enum Command {
         #[arg(long)]
         dir: Option<std::path::PathBuf>,
     },
+    Serve {
+        #[arg(long, default_value_t = 8088)]
+        port: u16,
+    },
+    Worker,
+    Job {
+        name: String,
+        #[arg(long)]
+        enqueue: bool,
+    },
 }
 
 #[tokio::main]
@@ -37,6 +47,9 @@ async fn main() {
         Command::GmailAuth { daily_limit } => gmail_auth(daily_limit).await,
         Command::Health => health().await,
         Command::SyncCsv { dir } => sync_csv(dir).await,
+        Command::Serve { port } => serve(port).await,
+        Command::Worker => worker().await,
+        Command::Job { name, enqueue } => job(&name, enqueue).await,
     };
     if let Err(message) = result {
         tracing::error!("{message}");
@@ -106,6 +119,50 @@ async fn sync_csv(dir: Option<std::path::PathBuf>) -> Result<(), String> {
             "some rows were skipped"
         );
     }
+    Ok(())
+}
+
+async fn job_context() -> Result<prospecting_agent::jobs::JobContext, String> {
+    let config = AppConfig::from_env().map_err(|e| e.to_string())?;
+    let pool = db::connect(config.database_url.expose())
+        .await
+        .map_err(|e| e.to_string())?;
+    db::migrate(&pool).await.map_err(|e| e.to_string())?;
+    Ok(prospecting_agent::jobs::JobContext::from_config(pool, config))
+}
+
+async fn serve(port: u16) -> Result<(), String> {
+    let ctx = job_context().await?;
+    let state = std::sync::Arc::new(prospecting_agent::http::AppState {
+        ctx,
+        webhooks: prospecting_agent::http::webhooks::WebhookRegistry::default(),
+    });
+    prospecting_agent::http::serve(state, port)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn worker() -> Result<(), String> {
+    let ctx = job_context().await?;
+    prospecting_agent::jobs::runtime::run_worker(ctx)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn job(name: &str, enqueue: bool) -> Result<(), String> {
+    let ctx = job_context().await?;
+    if enqueue {
+        prospecting_agent::jobs::runtime::enqueue(&ctx.pool, name)
+            .await
+            .map_err(|e| e.to_string())?;
+        println!("enqueued {name}");
+        return Ok(());
+    }
+    let report = prospecting_agent::jobs::run_job(&ctx, name)
+        .await
+        .map_err(|e| e.to_string())?;
+    let rendered = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+    println!("{rendered}");
     Ok(())
 }
 

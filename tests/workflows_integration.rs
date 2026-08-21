@@ -1352,12 +1352,14 @@ async fn interested_reply_updates_status_stops_sequence_and_notifies() {
     db::sequences::upsert(&pool, &state).await.unwrap();
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
-            "intent": "interested",
-            "summary": "Wants a demo next week",
-            "suggested_action": "book a meeting",
-            "notify_rep": true,
-        }))))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
+                "intent": "interested",
+                "summary": "Wants a demo next week",
+                "suggested_action": "book a meeting",
+                "notify_rep": true,
+            }))),
+        )
         .expect(1)
         .mount(&llm_server)
         .await;
@@ -1375,13 +1377,25 @@ async fn interested_reply_updates_status_stops_sequence_and_notifies() {
     )
     .await
     .unwrap();
-    assert_eq!(outcome.new_status, prospecting_agent::domain::ContactStatus::Replied);
+    assert_eq!(
+        outcome.new_status,
+        prospecting_agent::domain::ContactStatus::Replied
+    );
     assert!(outcome.sequence_stopped);
     let contact_after = db::contacts::by_id(&pool, contact.id).await.unwrap().unwrap();
-    assert_eq!(contact_after.status, prospecting_agent::domain::ContactStatus::Replied);
-    let sequence = db::sequences::for_contact(&pool, contact.id).await.unwrap().unwrap();
+    assert_eq!(
+        contact_after.status,
+        prospecting_agent::domain::ContactStatus::Replied
+    );
+    let sequence = db::sequences::for_contact(&pool, contact.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!sequence.is_active());
-    assert_eq!(sequence.stop_reason, Some(prospecting_agent::domain::StopReason::Replied));
+    assert_eq!(
+        sequence.stop_reason,
+        Some(prospecting_agent::domain::StopReason::Replied)
+    );
     let history = db::engagements::for_contact(&pool, contact.id, 10).await.unwrap();
     assert!(history.iter().any(|e| e.kind == EngagementKind::Replied));
 }
@@ -1399,12 +1413,14 @@ async fn opt_out_reply_disqualifies_and_stops_with_opted_out() {
     db::sequences::upsert(&pool, &state).await.unwrap();
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
-            "intent": "opt_out",
-            "summary": "Asked to be removed",
-            "suggested_action": "remove from list",
-            "notify_rep": false,
-        }))))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
+                "intent": "opt_out",
+                "summary": "Asked to be removed",
+                "suggested_action": "remove from list",
+                "notify_rep": false,
+            }))),
+        )
         .mount(&llm_server)
         .await;
     let outcome = prospecting_agent::workflows::analysis::analyze_reply(
@@ -1421,9 +1437,18 @@ async fn opt_out_reply_disqualifies_and_stops_with_opted_out() {
     )
     .await
     .unwrap();
-    assert_eq!(outcome.new_status, prospecting_agent::domain::ContactStatus::OptedOut);
-    let sequence = db::sequences::for_contact(&pool, contact.id).await.unwrap().unwrap();
-    assert_eq!(sequence.stop_reason, Some(prospecting_agent::domain::StopReason::OptedOut));
+    assert_eq!(
+        outcome.new_status,
+        prospecting_agent::domain::ContactStatus::OptedOut
+    );
+    let sequence = db::sequences::for_contact(&pool, contact.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        sequence.stop_reason,
+        Some(prospecting_agent::domain::StopReason::OptedOut)
+    );
 }
 
 #[tokio::test]
@@ -1434,20 +1459,16 @@ async fn weekly_report_counts_recent_activity() {
     contact.email = Some(format!("w-{}@{domain}", uuid::Uuid::new_v4().simple()));
     contact.company_domain = Some(domain.clone());
     db::contacts::upsert(&pool, &contact).await.unwrap();
-    let mut sent = prospecting_agent::domain::Engagement::outbound(
-        contact.id,
-        Channel::Email,
-        EngagementKind::Sent,
-    );
+    let mut sent =
+        prospecting_agent::domain::Engagement::outbound(contact.id, Channel::Email, EngagementKind::Sent);
     sent.sequence_step = Some(1);
     db::engagements::insert(&pool, &sent).await.unwrap();
-    let inbound = prospecting_agent::domain::Engagement::inbound(
-        contact.id,
-        Channel::Email,
-        EngagementKind::Replied,
-    );
+    let inbound =
+        prospecting_agent::domain::Engagement::inbound(contact.id, Channel::Email, EngagementKind::Replied);
     db::engagements::insert(&pool, &inbound).await.unwrap();
-    let report = prospecting_agent::workflows::reporting::weekly_report(&pool, 7).await.unwrap();
+    let report = prospecting_agent::workflows::reporting::weekly_report(&pool, 7)
+        .await
+        .unwrap();
     assert!(report.emails_sent >= 1);
     assert!(report.replies >= 1);
     assert!(report.contacts_added >= 1);
