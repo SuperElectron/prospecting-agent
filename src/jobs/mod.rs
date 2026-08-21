@@ -106,8 +106,8 @@ pub enum JobError {
     Db(#[from] crate::db::DbError),
     #[error("outreach error: {0}")]
     Outreach(#[from] crate::workflows::outreach::OutreachError),
-    #[error("every discovery search failed across {0} companies")]
-    DiscoveryUnavailable(usize),
+    #[error("every discovery search failed across {attempted} companies")]
+    DiscoveryUnavailable { attempted: usize },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,7 +283,9 @@ async fn discover_batch(ctx: &JobContext) -> Result<serde_json::Value, JobError>
             &mut credits,
         )
         .await?;
-        companies::mark_discovery_attempted(&ctx.pool, &company.domain).await?;
+        if report.search_failed == 0 {
+            companies::mark_discovery_attempted(&ctx.pool, &company.domain).await?;
+        }
         if report.search_failed > 0 {
             searches_failed += 1;
         }
@@ -291,7 +293,9 @@ async fn discover_batch(ctx: &JobContext) -> Result<serde_json::Value, JobError>
         attempted.push(company.domain);
     }
     if !attempted.is_empty() && searches_failed == attempted.len() {
-        return Err(JobError::DiscoveryUnavailable(attempted.len()));
+        return Err(JobError::DiscoveryUnavailable {
+            attempted: attempted.len(),
+        });
     }
     Ok(serde_json::json!({
         "attempted": attempted,
