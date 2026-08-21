@@ -128,7 +128,7 @@ async fn engagement_and_sequence_state_persist() {
     assert_eq!(history[0].subject.as_deref(), Some("hello"));
 
     let mut state = SequenceState::start(contact.id, "standard", 3);
-    state.advance();
+    state.advance(Utc::now());
     state.stop(StopReason::Replied);
     db::sequences::upsert(&pool, &state).await.unwrap();
     let loaded = db::sequences::for_contact(&pool, contact.id)
@@ -319,4 +319,165 @@ async fn capacity_reservation_enforces_daily_cap() {
     assert!(!db::capacity::try_reserve(&pool, &sender, day, 2).await.unwrap());
     assert_eq!(db::capacity::sent_today(&pool, &sender, day).await.unwrap(), 2);
     assert!(!db::capacity::try_reserve(&pool, &sender, day, 0).await.unwrap());
+}
+
+#[tokio::test]
+async fn companies_without_contacts_rank_by_icp_score_with_cooldown_and_exclusions() {
+    let pool = require_pool!();
+    let stamp = uuid::Uuid::new_v4().simple().to_string();
+    let lonely_high = format!("lonely-high-{stamp}.example.com");
+    let lonely_low = format!("lonely-low-{stamp}.example.com");
+    let lonely_unscored = format!("lonely-unscored-{stamp}.example.com");
+    let staffed = format!("staffed-{stamp}.example.com");
+    let attempted_recently = format!("attempted-{stamp}.example.com");
+    for (domain, score) in [
+        (&lonely_high, Some(95)),
+        (&lonely_low, Some(10)),
+        (&lonely_unscored, None),
+        (&staffed, Some(99)),
+        (&attempted_recently, Some(97)),
+    ] {
+        let mut company = Company::new(domain);
+        company.icp_fit_score = score;
+        db::companies::upsert(&pool, &company).await.unwrap();
+    }
+    let mut staffed_contact = Contact::new(ContactSource::Csv);
+    staffed_contact.email = Some(format!("someone@{staffed}"));
+    staffed_contact.company_domain = Some(format!("HTTPS://WWW.{}/", staffed.to_uppercase()));
+    db::contacts::upsert(&pool, &staffed_contact).await.unwrap();
+    let mut homeless_contact = Contact::new(ContactSource::Csv);
+    homeless_contact.email = Some(format!("nowhere-{stamp}@example.com"));
+    homeless_contact.company_domain = None;
+    db::contacts::upsert(&pool, &homeless_contact).await.unwrap();
+    db::companies::mark_discovery_attempted(&pool, &attempted_recently)
+        .await
+        .unwrap();
+
+    let listed = db::companies::list_without_contacts(&pool, 100_000)
+        .await
+        .unwrap();
+    let domains: Vec<&str> = listed.iter().map(|company| company.domain.as_str()).collect();
+    assert!(domains.contains(&lonely_high.as_str()));
+    assert!(domains.contains(&lonely_low.as_str()));
+    assert!(domains.contains(&lonely_unscored.as_str()));
+    assert!(!domains.contains(&staffed.as_str()));
+    assert!(!domains.contains(&attempted_recently.as_str()));
+    let high_pos = domains.iter().position(|d| *d == lonely_high).unwrap();
+    let low_pos = domains.iter().position(|d| *d == lonely_low).unwrap();
+    let unscored_pos = domains.iter().position(|d| *d == lonely_unscored).unwrap();
+    assert!(high_pos < low_pos);
+    assert!(low_pos < unscored_pos);
+}
+
+#[tokio::test]
+async fn discovery_listing_breaks_score_ties_by_oldest_and_honors_limit() {
+    let pool = require_pool!();
+    let stamp = uuid::Uuid::new_v4().simple().to_string();
+    let older = format!("tie-older-{stamp}.example.com");
+    let newer = format!("tie-newer-{stamp}.example.com");
+    for domain in [&older, &newer] {
+        let mut company = Company::new(domain);
+        company.icp_fit_score = Some(88);
+        db::companies::upsert(&pool, &company).await.unwrap();
+    }
+    let listed = db::companies::list_without_contacts(&pool, 100_000)
+        .await
+        .unwrap();
+    let older_pos = listed.iter().position(|company| company.domain == older).unwrap();
+    let newer_pos = listed.iter().position(|company| company.domain == newer).unwrap();
+    assert!(older_pos < newer_pos);
+
+    let capped = db::companies::list_without_contacts(&pool, 1).await.unwrap();
+    assert_eq!(capped.len(), 1);
+}
+
+#[tokio::test]
+async fn emails_normalize_on_write_and_lookup() {
+    let pool = require_pool!();
+    let stamp = uuid::Uuid::new_v4().simple().to_string();
+    let mixed = format!("  Jane.Doe-{stamp}@ACME.example.com ");
+    let clean = format!("jane.doe-{stamp}@acme.example.com");
+    let mut contact = Contact::new(ContactSource::Csv);
+    contact.email = Some(mixed.clone());
+    db::contacts::upsert(&pool, &contact).await.unwrap();
+    let by_clean = db::contacts::by_email(&pool, &clean).await.unwrap().unwrap();
+    assert_eq!(by_clean.email.as_deref(), Some(clean.as_str()));
+    let by_mixed = db::contacts::by_email(&pool, &mixed).await.unwrap().unwrap();
+    assert_eq!(by_mixed.id, by_clean.id);
+}
+
+#[tokio::test]
+async fn email_dedupe_migration_collapses_multiple_loser_sequence_states() {
+    let pool = require_pool!();
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("DROP INDEX IF EXISTS contacts_email_unique")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let stamp = uuid::Uuid::new_v4().simple().to_string();
+    let base = format!("triple-{stamp}@acme.example.com");
+    let winner_id = uuid::Uuid::new_v4();
+    let loser_early = uuid::Uuid::new_v4();
+    let loser_late = uuid::Uuid::new_v4();
+    for (id, email, offset_secs, status) in [
+        (winner_id, base.clone(), 0.0f64, "in_sequence"),
+        (loser_early, base.to_uppercase(), 60.0, "in_sequence"),
+        (
+            loser_late,
+            format!("Triple-{stamp}@Acme.example.com"),
+            120.0,
+            "opted_out",
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO contacts (id, email, source, status, created_at, updated_at) \
+             VALUES ($1, $2, 'csv', $3, now() + make_interval(secs => $4), now())",
+        )
+        .bind(id)
+        .bind(email)
+        .bind(status)
+        .bind(offset_secs)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    }
+    for (contact_id, step) in [(loser_early, 1i16), (loser_late, 2i16)] {
+        sqlx::query(
+            "INSERT INTO sequence_states (contact_id, cadence, current_step, max_steps, stopped) \
+             VALUES ($1, 'standard', $2, 3, false)",
+        )
+        .bind(contact_id)
+        .bind(step)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    }
+
+    sqlx::raw_sql(include_str!("../migrations/0011_email_normalization.sql"))
+        .execute(&mut *tx)
+        .await
+        .expect("migration must handle multiple losers with sequence state");
+
+    let survivors: Vec<uuid::Uuid> = sqlx::query_scalar("SELECT id FROM contacts WHERE lower(email) = $1")
+        .bind(base.to_lowercase())
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(survivors, vec![winner_id]);
+    let status: String = sqlx::query_scalar("SELECT status FROM contacts WHERE id = $1")
+        .bind(winner_id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(status, "opted_out");
+    let (state_owner, step): (uuid::Uuid, i16) =
+        sqlx::query_as("SELECT contact_id, current_step FROM sequence_states WHERE contact_id = $1")
+            .bind(winner_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(state_owner, winner_id);
+    assert_eq!(step, 2);
+
+    tx.rollback().await.unwrap();
 }

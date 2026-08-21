@@ -1,6 +1,6 @@
 [package]
 name = "prospecting-agent"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT-0"
@@ -8,6 +8,10 @@ description = "AI prospecting agent: lead discovery, research, and multi-channel
 repository = "https://github.com/SuperElectron/prospecting-agent"
 
 [dependencies]
+apalis = "0.7.4"
+apalis-cron = "0.7.4"
+apalis-sql = { version = "0.7.4", features = ["postgres"] }
+axum = "0.8.9"
 base64 = "0.22"
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.6", features = ["derive"] }
@@ -20,7 +24,7 @@ sha2 = "0.11.0"
 sqlx = { version = "0.8.6", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "uuid", "migrate"] }
 thiserror = "2.0.20"
 tiny_http = "0.12"
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal", "time"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uuid = { version = "1.24.1", features = ["v4", "serde"] }

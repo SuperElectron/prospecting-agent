@@ -4,7 +4,7 @@ use sqlx::{PgPool, Row};
 use crate::workflows::reporting::ReportError;
 
 #[derive(Debug, Default, PartialEq, Eq, Serialize)]
-pub struct WeeklyReport {
+pub struct ActivityReport {
     pub emails_sent: i64,
     pub replies: i64,
     pub opt_outs: i64,
@@ -14,10 +14,14 @@ pub struct WeeklyReport {
     pub sequences_stopped: i64,
 }
 
-impl WeeklyReport {
+impl ActivityReport {
     pub fn render(&self) -> String {
+        self.render_with_label("weekly report")
+    }
+
+    pub fn render_with_label(&self, label: &str) -> String {
         format!(
-            "weekly report: {sent} emails sent, {replies} replies, {optouts} opt-outs, \
+            "{label}: {sent} emails sent, {replies} replies, {optouts} opt-outs, \
              {contacts} contacts added, {companies} companies added, {signals} signals detected, \
              {stopped} sequences stopped",
             sent = self.emails_sent,
@@ -31,7 +35,7 @@ impl WeeklyReport {
     }
 }
 
-pub async fn weekly_report(pool: &PgPool, window_days: i32) -> Result<WeeklyReport, ReportError> {
+pub async fn activity_report(pool: &PgPool, window_days: i32) -> Result<ActivityReport, ReportError> {
     let days = window_days.max(1);
     let row = sqlx::query(
         "SELECT \
@@ -54,7 +58,7 @@ pub async fn weekly_report(pool: &PgPool, window_days: i32) -> Result<WeeklyRepo
     .fetch_one(pool)
     .await
     .map_err(crate::db::DbError::from)?;
-    Ok(WeeklyReport {
+    Ok(ActivityReport {
         emails_sent: row.get("emails_sent"),
         replies: row.get("replies"),
         opt_outs: row.get("opt_outs"),
@@ -67,14 +71,25 @@ pub async fn weekly_report(pool: &PgPool, window_days: i32) -> Result<WeeklyRepo
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn render_label_follows_the_window() {
+        let report = super::ActivityReport::default();
+        assert!(
+            report
+                .render_with_label("daily digest")
+                .starts_with("daily digest:")
+        );
+        assert!(report.render().starts_with("weekly report:"));
+    }
+
     use super::*;
 
     #[test]
     fn render_reads_as_one_line() {
-        let report = WeeklyReport {
+        let report = ActivityReport {
             emails_sent: 12,
             replies: 3,
-            ..WeeklyReport::default()
+            ..ActivityReport::default()
         };
         let line = report.render();
         assert!(line.contains("12 emails sent"));

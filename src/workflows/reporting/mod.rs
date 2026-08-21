@@ -1,6 +1,6 @@
 pub mod weekly;
 
-pub use weekly::{WeeklyReport, weekly_report};
+pub use weekly::{ActivityReport, activity_report};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReportError {

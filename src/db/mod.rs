@@ -3,9 +3,11 @@ pub mod capacity;
 pub mod companies;
 pub mod contacts;
 pub mod engagements;
+pub mod inbound;
 pub mod sequences;
 pub mod signals;
 pub mod strategies;
+pub mod tasks;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;

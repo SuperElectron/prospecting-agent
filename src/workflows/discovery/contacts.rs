@@ -37,7 +37,7 @@ pub struct DiscoveryReport {
 }
 
 impl DiscoveryReport {
-    fn absorb(&mut self, other: &DiscoveryReport) {
+    pub(crate) fn absorb(&mut self, other: &DiscoveryReport) {
         self.discovered += other.discovered;
         self.already_known += other.already_known;
         self.no_match += other.no_match;
@@ -160,26 +160,6 @@ async fn land_person(
     .await?;
     report.discovered += 1;
     Ok(())
-}
-
-pub async fn source_contacts(
-    pool: &PgPool,
-    memory: &MemoryClient,
-    apollo: &ApolloClient,
-    icp: &IcpCriteria,
-    domains: &[String],
-    budget: &DiscoveryBudget,
-) -> Result<DiscoveryReport, DiscoveryError> {
-    let mut total = DiscoveryReport::default();
-    let mut credits_left = budget.max_credits_per_run;
-    for domain in domains {
-        if credits_left == 0 {
-            break;
-        }
-        let report = discover_contacts(pool, memory, apollo, icp, domain, budget, &mut credits_left).await?;
-        total.absorb(&report);
-    }
-    Ok(total)
 }
 
 #[cfg(test)]
