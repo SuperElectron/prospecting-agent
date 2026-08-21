@@ -28,12 +28,13 @@ pub enum JobKind {
     OutreachSequence,
     OutreachSend,
     TaskExecutor,
+    DailyDigest,
     WeeklyReport,
     HealthCheck,
 }
 
 impl JobKind {
-    pub const ALL: [JobKind; 12] = [
+    pub const ALL: [JobKind; 13] = [
         JobKind::CsvSync,
         JobKind::DiscoverContacts,
         JobKind::EnrichContacts,
@@ -44,6 +45,7 @@ impl JobKind {
         JobKind::OutreachSequence,
         JobKind::OutreachSend,
         JobKind::TaskExecutor,
+        JobKind::DailyDigest,
         JobKind::WeeklyReport,
         JobKind::HealthCheck,
     ];
@@ -60,6 +62,7 @@ impl JobKind {
             JobKind::OutreachSequence => "outreach_sequence",
             JobKind::OutreachSend => "outreach_send",
             JobKind::TaskExecutor => "task_executor",
+            JobKind::DailyDigest => "daily_digest",
             JobKind::WeeklyReport => "weekly_report",
             JobKind::HealthCheck => "health_check",
         }
@@ -233,18 +236,29 @@ pub async fn run_job(ctx: &JobContext, kind: JobKind) -> Result<serde_json::Valu
         }
         JobKind::ResearchCompanies => research_batch(ctx).await,
         JobKind::DetectSignals => signal_batch(ctx).await,
-        JobKind::WeeklyReport => {
-            let report = reporting::weekly_report(&ctx.pool, 7).await?;
-            if let Err(e) = ctx.notifier.notify(NotifyLevel::Info, &report.render()).await {
-                tracing::warn!(error = %e, "weekly report notify failed");
-            }
-            Ok(serde_json::to_value(report)?)
-        }
+        JobKind::DailyDigest => activity_report(ctx, 1, "daily digest").await,
+        JobKind::WeeklyReport => activity_report(ctx, 7, "weekly report").await,
         JobKind::HealthCheck => {
             let report = health_report(ctx).await;
             Ok(serde_json::to_value(report)?)
         }
     }
+}
+
+async fn activity_report(
+    ctx: &JobContext,
+    window_days: i32,
+    label: &str,
+) -> Result<serde_json::Value, JobError> {
+    let report = reporting::activity_report(&ctx.pool, window_days).await?;
+    if let Err(e) = ctx
+        .notifier
+        .notify(NotifyLevel::Info, &report.render_with_label(label))
+        .await
+    {
+        tracing::warn!(error = %e, label, "activity report notify failed");
+    }
+    Ok(serde_json::to_value(report)?)
 }
 
 async fn discover_batch(ctx: &JobContext) -> Result<serde_json::Value, JobError> {

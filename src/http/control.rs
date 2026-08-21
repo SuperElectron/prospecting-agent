@@ -95,7 +95,7 @@ pub async fn enqueue_job(State(state): State<Arc<AppState>>, Path(name): Path<St
 }
 
 pub async fn report(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match reporting::weekly_report(&state.ctx.pool, 7).await {
+    match reporting::activity_report(&state.ctx.pool, 7).await {
         Ok(report) => (StatusCode::OK, axum::Json(serde_json::json!(report))),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
