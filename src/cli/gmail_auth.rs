@@ -39,7 +39,11 @@ pub async fn run(args: &GmailAuthArgs) -> Result<(), ConnectorError> {
         daily_limit: args.daily_limit,
     });
     save_senders(&args.senders_file, &senders)?;
-    println!("Authorized {email}. {} sender(s) now in {}", senders.len(), args.senders_file);
+    println!(
+        "Authorized {email}. {} sender(s) now in {}",
+        senders.len(),
+        args.senders_file
+    );
     println!("Run again to add another sender.");
     Ok(())
 }
@@ -68,19 +72,20 @@ fn wait_for_code(port: u16) -> Result<String, ConnectorError> {
                 return Ok(urldecode(&code));
             }
             _ => {
-                let _ = request
-                    .respond(tiny_http::Response::from_string("missing code").with_status_code(400));
-                return Err(ConnectorError::Auth("redirect carried no authorization code".into()));
+                let _ =
+                    request.respond(tiny_http::Response::from_string("missing code").with_status_code(400));
+                return Err(ConnectorError::Auth(
+                    "redirect carried no authorization code".into(),
+                ));
             }
         }
     }
-    Err(ConnectorError::Auth("auth server stopped before a redirect arrived".into()))
+    Err(ConnectorError::Auth(
+        "auth server stopped before a redirect arrived".into(),
+    ))
 }
 
-async fn fetch_profile_email(
-    http: &reqwest::Client,
-    access_token: &str,
-) -> Result<String, ConnectorError> {
+async fn fetch_profile_email(http: &reqwest::Client, access_token: &str) -> Result<String, ConnectorError> {
     let resp = http
         .get("https://gmail.googleapis.com/gmail/v1/users/me/profile")
         .bearer_auth(access_token)
@@ -92,8 +97,7 @@ async fn fetch_profile_email(
         return Err(ConnectorError::Status { status, body });
     }
     let raw = resp.text().await?;
-    let profile: Profile =
-        serde_json::from_str(&raw).map_err(|e| ConnectorError::Decode(e.to_string()))?;
+    let profile: Profile = serde_json::from_str(&raw).map_err(|e| ConnectorError::Decode(e.to_string()))?;
     Ok(profile.email_address)
 }
 

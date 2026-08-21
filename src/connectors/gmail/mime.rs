@@ -73,7 +73,7 @@ pub fn reply_subject(original: Option<&str>, generated: &str) -> String {
 mod tests {
     use super::*;
 
-    fn params<'a>(html: Option<&'a str>) -> MimeParams<'a> {
+    fn params(html: Option<&str>) -> MimeParams<'_> {
         MimeParams {
             to: "jane@acme.io",
             from: "sales@ours.io",

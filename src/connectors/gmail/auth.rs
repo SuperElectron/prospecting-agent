@@ -44,16 +44,24 @@ struct TokenResponse {
 }
 
 impl OauthClient {
+    pub fn new(client_id: impl Into<String>, client_secret: Secret) -> Self {
+        Self {
+            client_id: client_id.into(),
+            client_secret,
+            auth_base: DEFAULT_AUTH_BASE.into(),
+            token_base: DEFAULT_TOKEN_BASE.into(),
+        }
+    }
+
     pub fn from_file(path: &str) -> Result<Self, ConnectorError> {
         let raw = std::fs::read_to_string(path).map_err(|e| ConnectorError::Credentials {
             path: path.to_string(),
             reason: e.to_string(),
         })?;
-        let parsed: ClientFile =
-            serde_json::from_str(&raw).map_err(|e| ConnectorError::Credentials {
-                path: path.to_string(),
-                reason: format!("expected installed-app client json: {e}"),
-            })?;
+        let parsed: ClientFile = serde_json::from_str(&raw).map_err(|e| ConnectorError::Credentials {
+            path: path.to_string(),
+            reason: format!("expected installed-app client json: {e}"),
+        })?;
         Ok(Self {
             client_id: parsed.installed.client_id,
             client_secret: Secret::new(parsed.installed.client_secret),
@@ -62,6 +70,7 @@ impl OauthClient {
         })
     }
 
+    #[must_use]
     pub fn with_bases(mut self, auth_base: &str, token_base: &str) -> Self {
         self.auth_base = auth_base.trim_end_matches('/').to_string();
         self.token_base = token_base.trim_end_matches('/').to_string();
@@ -152,8 +161,7 @@ pub fn load_senders(path: &str) -> Result<Vec<SenderAccount>, ConnectorError> {
 }
 
 pub fn save_senders(path: &str, senders: &[SenderAccount]) -> Result<(), ConnectorError> {
-    let raw = serde_json::to_string_pretty(senders)
-        .map_err(|e| ConnectorError::Decode(e.to_string()))?;
+    let raw = serde_json::to_string_pretty(senders).map_err(|e| ConnectorError::Decode(e.to_string()))?;
     std::fs::write(path, raw).map_err(|e| ConnectorError::Credentials {
         path: path.to_string(),
         reason: e.to_string(),
@@ -161,13 +169,16 @@ pub fn save_senders(path: &str, senders: &[SenderAccount]) -> Result<(), Connect
 }
 
 fn urlencode(raw: &str) -> String {
+    use std::fmt::Write;
     let mut out = String::with_capacity(raw.len());
     for byte in raw.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(byte as char);
             }
-            _ => out.push_str(&format!("%{byte:02X}")),
+            _ => {
+                let _ = write!(out, "%{byte:02X}");
+            }
         }
     }
     out
@@ -180,13 +191,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn client(server: &MockServer) -> OauthClient {
-        OauthClient {
-            client_id: "cid".into(),
-            client_secret: Secret::new("csec"),
-            auth_base: DEFAULT_AUTH_BASE.into(),
-            token_base: DEFAULT_TOKEN_BASE.into(),
-        }
-        .with_bases(&server.uri(), &server.uri())
+        OauthClient::new("cid", Secret::new("csec")).with_bases(&server.uri(), &server.uri())
     }
 
     #[test]
@@ -212,12 +217,7 @@ mod tests {
 
     #[test]
     fn auth_url_carries_scopes_offline_access_and_consent() {
-        let server_free = OauthClient {
-            client_id: "cid".into(),
-            client_secret: Secret::new("csec"),
-            auth_base: DEFAULT_AUTH_BASE.into(),
-            token_base: DEFAULT_TOKEN_BASE.into(),
-        };
+        let server_free = OauthClient::new("cid", Secret::new("csec"));
         let url = server_free.auth_url("http://localhost:3847/oauth2callback");
         assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
         assert!(url.contains("gmail.send"));
@@ -269,9 +269,7 @@ mod tests {
         let bad = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/token"))
-            .respond_with(
-                ResponseTemplate::new(400).set_body_string(r#"{"error":"invalid_grant"}"#),
-            )
+            .respond_with(ResponseTemplate::new(400).set_body_string(r#"{"error":"invalid_grant"}"#))
             .mount(&bad)
             .await;
         let err = client(&bad).access_token(&http, "revoked").await.unwrap_err();

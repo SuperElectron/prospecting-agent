@@ -47,6 +47,7 @@ impl GmailConnector {
         }
     }
 
+    #[must_use]
     pub fn with_api_base(mut self, api_base: &str) -> Self {
         self.api_base = api_base.trim_end_matches('/').to_string();
         self
@@ -68,10 +69,7 @@ impl GmailConnector {
         &self.api_base
     }
 
-    async fn reserve_sender(
-        &self,
-        prefer: Option<&str>,
-    ) -> Result<&SenderAccount, ConnectorError> {
+    async fn reserve_sender(&self, prefer: Option<&str>) -> Result<&SenderAccount, ConnectorError> {
         let day = Utc::now().date_naive();
         if let Some(email) = prefer
             && let Some(sender) = self.senders.iter().find(|s| s.email == email)
@@ -125,10 +123,7 @@ impl EmailTransport for GmailConnector {
         if !is_plausible_email(&email.to) {
             return Err(ConnectorError::InvalidRecipient(email.to.clone()));
         }
-        let prefer = email
-            .thread
-            .as_ref()
-            .and_then(|t| t.prefer_sender.as_deref());
+        let prefer = email.thread.as_ref().and_then(|t| t.prefer_sender.as_deref());
         let sender = self.reserve_sender(prefer).await?;
         let boundary = format!("boundary_{}", uuid::Uuid::new_v4().simple());
         let subject = match &email.thread {

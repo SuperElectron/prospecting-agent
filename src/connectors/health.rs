@@ -75,7 +75,12 @@ async fn check_db(pool: Option<&PgPool>) -> Check {
 async fn check_http(name: &'static str, base_url: Option<&str>, probe_path: &str) -> Check {
     let start = Instant::now();
     let Some(base) = base_url else {
-        return check(name, CheckStatus::NotConfigured, start, "no url configured".into());
+        return check(
+            name,
+            CheckStatus::NotConfigured,
+            start,
+            "no url configured".into(),
+        );
     };
     let url = format!("{}{probe_path}", base.trim_end_matches('/'));
     let client = reqwest::Client::new();
@@ -160,7 +165,12 @@ mod tests {
         };
         let report = run_health_check(&inputs).await;
         assert_eq!(report.status, CheckStatus::Degraded);
-        assert!(report.checks.iter().all(|c| c.status == CheckStatus::NotConfigured));
+        assert!(
+            report
+                .checks
+                .iter()
+                .all(|c| c.status == CheckStatus::NotConfigured)
+        );
     }
 
     #[tokio::test]

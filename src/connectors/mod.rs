@@ -64,10 +64,8 @@ pub struct SendReceipt {
 }
 
 pub trait EmailTransport {
-    fn send(
-        &self,
-        email: &OutboundEmail,
-    ) -> impl Future<Output = Result<SendReceipt, ConnectorError>> + Send;
+    fn send(&self, email: &OutboundEmail)
+    -> impl Future<Output = Result<SendReceipt, ConnectorError>> + Send;
 }
 
 pub fn is_plausible_email(address: &str) -> bool {

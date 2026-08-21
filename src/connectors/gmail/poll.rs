@@ -57,7 +57,10 @@ impl GmailConnector {
         max_results: u16,
     ) -> Result<Vec<MessageRef>, ConnectorError> {
         let sender = self.sender_account(sender_email)?;
-        let token = self.oauth().access_token(self.http(), &sender.refresh_token).await?;
+        let token = self
+            .oauth()
+            .access_token(self.http(), &sender.refresh_token)
+            .await?;
         let url = format!("{}/gmail/v1/users/me/messages", self.api_base());
         let resp = self
             .http()
@@ -83,7 +86,10 @@ impl GmailConnector {
         message_id: &str,
     ) -> Result<InboundMessage, ConnectorError> {
         let sender = self.sender_account(sender_email)?;
-        let token = self.oauth().access_token(self.http(), &sender.refresh_token).await?;
+        let token = self
+            .oauth()
+            .access_token(self.http(), &sender.refresh_token)
+            .await?;
         let url = format!("{}/gmail/v1/users/me/messages/{message_id}", self.api_base());
         let resp = self
             .http()
