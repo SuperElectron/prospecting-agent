@@ -128,7 +128,7 @@ async fn engagement_and_sequence_state_persist() {
     assert_eq!(history[0].subject.as_deref(), Some("hello"));
 
     let mut state = SequenceState::start(contact.id, "standard", 3);
-    state.advance();
+    state.advance(Utc::now());
     state.stop(StopReason::Replied);
     db::sequences::upsert(&pool, &state).await.unwrap();
     let loaded = db::sequences::for_contact(&pool, contact.id)

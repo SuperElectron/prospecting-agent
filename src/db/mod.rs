@@ -6,6 +6,7 @@ pub mod engagements;
 pub mod sequences;
 pub mod signals;
 pub mod strategies;
+pub mod tasks;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;

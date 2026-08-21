@@ -1,4 +1,5 @@
 pub mod runtime;
+pub mod tasks;
 
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -11,7 +12,7 @@ use crate::connectors::{LogNotifier, Notifier, NotifyLevel};
 use crate::db::companies;
 use crate::llm::{LlmClient, Policy};
 use crate::memory::MemoryClient;
-use crate::workflows::{discovery, reporting, research, sync};
+use crate::workflows::{discovery, outreach, reporting, research, sync};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -22,18 +23,24 @@ pub enum JobKind {
     EnrichCompanies,
     ResearchCompanies,
     DetectSignals,
+    OutreachSequence,
+    OutreachSend,
+    TaskExecutor,
     WeeklyReport,
     HealthCheck,
 }
 
 impl JobKind {
-    pub const ALL: [JobKind; 8] = [
+    pub const ALL: [JobKind; 11] = [
         JobKind::CsvSync,
         JobKind::DiscoverContacts,
         JobKind::EnrichContacts,
         JobKind::EnrichCompanies,
         JobKind::ResearchCompanies,
         JobKind::DetectSignals,
+        JobKind::OutreachSequence,
+        JobKind::OutreachSend,
+        JobKind::TaskExecutor,
         JobKind::WeeklyReport,
         JobKind::HealthCheck,
     ];
@@ -46,6 +53,9 @@ impl JobKind {
             JobKind::EnrichCompanies => "enrich_companies",
             JobKind::ResearchCompanies => "research_companies",
             JobKind::DetectSignals => "detect_signals",
+            JobKind::OutreachSequence => "outreach_sequence",
+            JobKind::OutreachSend => "outreach_send",
+            JobKind::TaskExecutor => "task_executor",
             JobKind::WeeklyReport => "weekly_report",
             JobKind::HealthCheck => "health_check",
         }
@@ -87,6 +97,8 @@ pub enum JobError {
     Queue(#[from] sqlx::Error),
     #[error("storage error: {0}")]
     Db(#[from] crate::db::DbError),
+    #[error("outreach error: {0}")]
+    Outreach(#[from] crate::workflows::outreach::OutreachError),
     #[error("every discovery search failed across {attempted} companies")]
     DiscoveryUnavailable { attempted: usize },
 }
@@ -145,6 +157,8 @@ impl JobContext {
 
 const RESEARCH_BATCH: i64 = 3;
 const DISCOVER_BATCH: i64 = 5;
+const ENROLL_LIMIT: i64 = 50;
+const SEND_LIMIT: i64 = 50;
 const ENRICH_LIMIT: i64 = 25;
 const ENRICH_CREDITS: u16 = 10;
 
@@ -183,6 +197,30 @@ pub async fn run_job(ctx: &JobContext, kind: JobKind) -> Result<serde_json::Valu
             let report =
                 discovery::enrich_companies(&ctx.pool, &ctx.memory, &ctx.apollo, ENRICH_LIMIT, &mut credits)
                     .await?;
+            Ok(serde_json::to_value(report)?)
+        }
+        JobKind::OutreachSequence => {
+            let report =
+                outreach::enroll_contacts(&ctx.pool, &crate::config::Cadence::standard(), ENROLL_LIMIT)
+                    .await?;
+            Ok(serde_json::to_value(report)?)
+        }
+        JobKind::OutreachSend => {
+            let inputs = outreach::SendPassInputs {
+                memory: &ctx.memory,
+                llm: &ctx.llm,
+                policies: &ctx.policies,
+                rules: &crate::config::MessagingRules::default(),
+                preflight_config: &crate::workflows::accounts::PreflightConfig::default(),
+                transport: ctx.gmail.as_ref(),
+                dry_run: ctx.config.dry_run,
+                limit: SEND_LIMIT,
+            };
+            let report = outreach::run_send_pass(&ctx.pool, &inputs, chrono::Utc::now()).await?;
+            Ok(serde_json::to_value(report)?)
+        }
+        JobKind::TaskExecutor => {
+            let report = tasks::execute_due(ctx).await?;
             Ok(serde_json::to_value(report)?)
         }
         JobKind::ResearchCompanies => research_batch(ctx).await,
