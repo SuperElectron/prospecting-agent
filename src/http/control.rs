@@ -32,12 +32,25 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
     }))
 }
 
+struct RunGuard {
+    state: Arc<AppState>,
+    kind: JobKind,
+}
+
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        if let Ok(mut running) = self.state.running.lock() {
+            running.remove(&self.kind);
+        }
+    }
+}
+
 pub async fn run_job_now(State(state): State<Arc<AppState>>, Path(name): Path<String>) -> impl IntoResponse {
     let Ok(kind) = JobKind::from_str(&name) else {
         return unknown_job(&name);
     };
     {
-        let mut running = state.running.lock().await;
+        let mut running = state.running.lock().expect("running set not poisoned");
         if !running.insert(kind) {
             return (
                 StatusCode::CONFLICT,
@@ -45,8 +58,11 @@ pub async fn run_job_now(State(state): State<Arc<AppState>>, Path(name): Path<St
             );
         }
     }
+    let _guard = RunGuard {
+        state: state.clone(),
+        kind,
+    };
     let outcome = tokio::time::timeout(RUN_TIMEOUT, jobs::run_job(&state.ctx, kind)).await;
-    state.running.lock().await.remove(&kind);
     match outcome {
         Ok(Ok(report)) => (StatusCode::OK, axum::Json(report)),
         Ok(Err(e)) => (

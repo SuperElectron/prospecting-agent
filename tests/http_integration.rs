@@ -282,6 +282,10 @@ async fn enqueue_endpoint_accepts_a_known_job() {
 #[tokio::test]
 async fn contact_lookup_returns_the_seeded_contact() {
     let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+        assert!(
+            std::env::var("CI").is_err(),
+            "TEST_DATABASE_URL must be set in CI so http tests cannot pass vacuously"
+        );
         eprintln!("TEST_DATABASE_URL not set; skipping http integration test");
         return;
     };

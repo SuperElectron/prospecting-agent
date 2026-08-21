@@ -7,7 +7,6 @@ use std::sync::Arc;
 use apalis_sql::postgres::PostgresStorage;
 use axum::Router;
 use axum::routing::{get, post};
-use tokio::sync::Mutex;
 
 use crate::http::webhooks::WebhookRegistry;
 use crate::jobs::{JobContext, JobKind, NamedJob};
@@ -24,7 +23,7 @@ pub struct AppState {
     pub ctx: JobContext,
     pub queue: PostgresStorage<NamedJob>,
     pub webhooks: WebhookRegistry,
-    pub running: Mutex<HashSet<JobKind>>,
+    pub running: std::sync::Mutex<HashSet<JobKind>>,
 }
 
 impl AppState {
@@ -33,7 +32,7 @@ impl AppState {
             ctx,
             queue,
             webhooks,
-            running: Mutex::new(HashSet::new()),
+            running: std::sync::Mutex::new(HashSet::new()),
         }
     }
 }
