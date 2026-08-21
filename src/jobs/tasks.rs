@@ -46,14 +46,24 @@ pub struct TaskRunReport {
     pub failed: u64,
     pub deferred: u64,
     pub credits_spent: u64,
+    pub credit_capped: bool,
     pub bookkeeping_failed: u64,
 }
 
 pub async fn execute_due(ctx: &JobContext) -> Result<TaskRunReport, crate::jobs::JobError> {
     let mut report = TaskRunReport::default();
-    let granted = crate::jobs::reserve_apollo_credits(ctx, TASK_CREDITS).await?;
-    let mut credits = granted;
     let tasks = db::tasks::claim_due(&ctx.pool, Utc::now(), CLAIM_LIMIT).await?;
+    let enrich_wanted = u16::try_from(
+        tasks
+            .iter()
+            .filter(|task| task.kind == TaskKind::EnrichContact)
+            .count(),
+    )
+    .unwrap_or(u16::MAX)
+    .min(TASK_CREDITS);
+    let reservation = crate::jobs::reserve_apollo_credits(ctx, enrich_wanted).await?;
+    report.credit_capped = reservation.capped;
+    let mut credits = reservation.granted;
     for task in tasks {
         report.claimed += 1;
         let before = credits;
@@ -90,7 +100,7 @@ pub async fn execute_due(ctx: &JobContext) -> Result<TaskRunReport, crate::jobs:
             report.bookkeeping_failed += 1;
         }
     }
-    crate::jobs::settle_apollo_credits(ctx, granted, credits).await?;
+    crate::jobs::settle_apollo_credits(ctx, &reservation, credits).await?;
     Ok(report)
 }
 

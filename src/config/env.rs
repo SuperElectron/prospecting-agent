@@ -1,3 +1,4 @@
+use crate::config::cadence::Cadence;
 use crate::config::outreach::PreflightConfig;
 use crate::config::targeting::{DiscoveryBudget, IcpCriteria};
 use crate::domain::Seniority;
@@ -36,6 +37,7 @@ pub struct AppConfig {
     pub discovery: DiscoveryBudget,
     pub preflight: PreflightConfig,
     pub apollo_daily_credit_cap: u16,
+    pub cadence: Cadence,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -128,10 +130,11 @@ impl AppConfig {
                 carpet_bomb_window_days: parse_number(env, "CARPET_BOMB_WINDOW_DAYS", 7)?,
                 max_contacts_per_window: parse_number(env, "MAX_CONTACTS_PER_WINDOW", 2)?,
                 negative_event_delay_days: parse_number(env, "NEGATIVE_EVENT_DELAY_DAYS", 21)?,
-                warm_intro_cadence: get_or(env, "WARM_INTRO_CADENCE", "warm-intro"),
+                warm_intro_cadence: get_or(env, "WARM_INTRO_CADENCE", "gentle"),
                 warm_intro_max_emails: parse_number(env, "WARM_INTRO_MAX_EMAILS", 2)?,
             },
             apollo_daily_credit_cap: parse_number(env, "APOLLO_DAILY_CREDIT_CAP", 50)?,
+            cadence: cadence_from_map(env)?,
         })
     }
 }
@@ -192,6 +195,35 @@ fn linkedin_from_map(env: &EnvMap) -> Result<Option<LinkedinConfig>, ConfigError
         heyreach_campaign_id: optional(env, "HEYREACH_CAMPAIGN_ID"),
         daily_limit: parse_u16(env, "LINKEDIN_DAILY_LIMIT", 20)?,
     }))
+}
+
+fn cadence_from_map(env: &EnvMap) -> Result<Cadence, ConfigError> {
+    let name = get_or(env, "CADENCE", "standard");
+    let mut cadence = crate::config::cadence::by_name(&name).ok_or(ConfigError::Invalid {
+        key: "CADENCE",
+        reason: format!("no cadence named {name}"),
+    })?;
+    cadence.max_steps = parse_number(env, "CADENCE_MAX_STEPS", cadence.max_steps)?;
+    cadence.min_days_between = parse_number(env, "CADENCE_MIN_DAYS_BETWEEN", cadence.min_days_between)?;
+    cadence.send_hours.start = parse_number(env, "SEND_HOURS_START", cadence.send_hours.start)?;
+    cadence.send_hours.end = parse_number(env, "SEND_HOURS_END", cadence.send_hours.end)?;
+    if let Some(raw) = optional(env, "SEND_DAYS") {
+        let days: Result<Vec<chrono::Weekday>, _> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|day| !day.is_empty())
+            .map(str::parse)
+            .collect();
+        cadence.send_days = days.map_err(|_| ConfigError::Invalid {
+            key: "SEND_DAYS",
+            reason: format!("cannot parse {raw} as weekday names"),
+        })?;
+    }
+    cadence.validate().map_err(|e| ConfigError::Invalid {
+        key: "SEND_HOURS_START",
+        reason: e.to_string(),
+    })?;
+    Ok(cadence)
 }
 
 fn targeting_from_map(env: &EnvMap) -> Result<IcpCriteria, ConfigError> {
@@ -293,6 +325,41 @@ mod tests {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect()
+    }
+
+    #[test]
+    fn cadence_parses_selects_overrides_and_validates() {
+        let mut env = base_env();
+        let cfg = AppConfig::from_map(&env).unwrap();
+        assert_eq!(cfg.cadence, Cadence::standard());
+
+        env.insert("CADENCE".into(), "gentle".into());
+        env.insert("CADENCE_MAX_STEPS".into(), "4".into());
+        env.insert("SEND_HOURS_START".into(), "9".into());
+        env.insert("SEND_DAYS".into(), "mon, fri".into());
+        let cfg = AppConfig::from_map(&env).unwrap();
+        assert_eq!(cfg.cadence.name, "gentle");
+        assert_eq!(cfg.cadence.max_steps, 4);
+        assert_eq!(cfg.cadence.send_hours.start, 9);
+        assert_eq!(
+            cfg.cadence.send_days,
+            vec![chrono::Weekday::Mon, chrono::Weekday::Fri]
+        );
+
+        env.insert("CADENCE".into(), "aggressive".into());
+        assert!(matches!(
+            AppConfig::from_map(&env),
+            Err(ConfigError::Invalid { key: "CADENCE", .. })
+        ));
+        env.insert("CADENCE".into(), "gentle".into());
+        env.insert("SEND_HOURS_END".into(), "9".into());
+        assert!(AppConfig::from_map(&env).is_err());
+        env.insert("SEND_HOURS_END".into(), "16".into());
+        env.insert("SEND_DAYS".into(), "funday".into());
+        assert!(matches!(
+            AppConfig::from_map(&env),
+            Err(ConfigError::Invalid { key: "SEND_DAYS", .. })
+        ));
     }
 
     #[test]
