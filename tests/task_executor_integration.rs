@@ -1,4 +1,7 @@
+mod common;
+
 use chrono::{Duration, Utc};
+use common::cross_process_sweep_lock;
 use prospecting_agent::config::AppConfig;
 use prospecting_agent::db;
 use prospecting_agent::domain::{AgentTask, TaskKind, TaskStatus};
@@ -19,17 +22,6 @@ fn test_config(database_url: &str) -> AppConfig {
     .map(|(k, v)| (k.to_string(), v.to_string()))
     .collect();
     AppConfig::from_map(&env).expect("test config parses")
-}
-
-async fn cross_process_sweep_lock() -> sqlx::PgConnection {
-    use sqlx::Connection;
-    let url = std::env::var("TEST_DATABASE_URL").expect("guard runs only with a test database");
-    let mut conn = sqlx::PgConnection::connect(&url).await.expect("lock connection");
-    sqlx::query("SELECT pg_advisory_lock(73461122)")
-        .execute(&mut conn)
-        .await
-        .expect("advisory lock");
-    conn
 }
 
 async fn test_ctx() -> Option<JobContext> {

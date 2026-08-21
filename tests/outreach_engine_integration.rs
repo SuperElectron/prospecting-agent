@@ -1,3 +1,6 @@
+mod common;
+
+use common::cross_process_sweep_lock;
 use std::sync::Mutex;
 
 use chrono::{TimeZone, Utc};
@@ -22,17 +25,6 @@ async fn test_pool() -> Option<sqlx::PgPool> {
     let pool = db::connect(&url).await.expect("connect to test database");
     db::migrate(&pool).await.expect("run migrations");
     Some(pool)
-}
-
-async fn cross_process_sweep_lock() -> sqlx::PgConnection {
-    use sqlx::Connection;
-    let url = std::env::var("TEST_DATABASE_URL").expect("guard runs only with a test database");
-    let mut conn = sqlx::PgConnection::connect(&url).await.expect("lock connection");
-    sqlx::query("SELECT pg_advisory_lock(73461122)")
-        .execute(&mut conn)
-        .await
-        .expect("advisory lock");
-    conn
 }
 
 macro_rules! require_pool {

@@ -1,4 +1,7 @@
+mod common;
+
 use chrono::{TimeZone, Utc};
+use common::cross_process_sweep_lock;
 use prospecting_agent::config::{AppConfig, MessagingRules, Secret};
 use prospecting_agent::connectors::gmail::{GmailConnector, OauthClient, SenderAccount};
 use prospecting_agent::db;
@@ -18,17 +21,6 @@ struct Rig {
     gmail: MockServer,
     domain: String,
     email: String,
-}
-
-async fn cross_process_sweep_lock() -> sqlx::PgConnection {
-    use sqlx::Connection;
-    let url = std::env::var("TEST_DATABASE_URL").expect("guard runs only with a test database");
-    let mut conn = sqlx::PgConnection::connect(&url).await.expect("lock connection");
-    sqlx::query("SELECT pg_advisory_lock(73461122)")
-        .execute(&mut conn)
-        .await
-        .expect("advisory lock");
-    conn
 }
 
 fn completion_with(content: &serde_json::Value) -> serde_json::Value {
@@ -117,6 +109,7 @@ async fn rig() -> Option<Rig> {
         ("GMAIL_CLIENT_FILE", "/nonexistent/client.json"),
         ("GMAIL_SENDERS_FILE", "/nonexistent/senders.json"),
         ("DRY_RUN", "false"),
+        ("APOLLO_DAILY_CREDIT_CAP", "60000"),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -235,21 +228,25 @@ async fn stage_send(rig: &Rig) {
     };
     let send = run_send_pass(&ctx.pool, &inputs, tuesday).await.unwrap();
     assert!(send.sent >= 1);
-    let sent_request = gmail
+    let decoded_sends: Vec<String> = gmail
         .received_requests()
         .await
         .expect("request recording enabled")
         .into_iter()
-        .find(|request| request.url.path().ends_with("/messages/send"))
-        .expect("a send request reached the gmail mock");
-    let payload: serde_json::Value = serde_json::from_slice(&sent_request.body).unwrap();
-    let raw = payload["raw"].as_str().expect("send payload carries raw MIME");
-    let mime = String::from_utf8(
-        base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, raw).unwrap(),
-    )
-    .unwrap();
-    assert!(mime.contains(&format!("To: {email}")), "mime: {mime}");
-    assert!(mime.contains("Subject: "), "mime: {mime}");
+        .filter(|request| request.url.path().ends_with("/messages/send"))
+        .filter_map(|request| {
+            let payload: serde_json::Value = serde_json::from_slice(&request.body).ok()?;
+            let raw = payload["raw"].as_str()?;
+            let bytes =
+                base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, raw).ok()?;
+            String::from_utf8(bytes).ok()
+        })
+        .collect();
+    let mine = decoded_sends
+        .iter()
+        .find(|mime| mime.contains(&format!("To: {email}")))
+        .unwrap_or_else(|| panic!("no decoded send addressed to the rig contact; sends: {decoded_sends:?}"));
+    assert!(mine.contains("Subject: "), "mime: {mine}");
     let contact = db::contacts::by_email(&ctx.pool, email).await.unwrap().unwrap();
     let state = db::sequences::for_contact(&ctx.pool, contact.id)
         .await

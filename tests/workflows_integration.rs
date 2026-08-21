@@ -1,3 +1,6 @@
+mod common;
+
+use common::cross_process_sweep_lock;
 use std::fmt::Write;
 
 use prospecting_agent::config::MemoryConfig;
@@ -38,17 +41,6 @@ fn memory_client(server: &MockServer) -> MemoryClient {
         base_url: server.uri(),
         user: "prospecting".into(),
     })
-}
-
-async fn cross_process_sweep_lock() -> sqlx::PgConnection {
-    use sqlx::Connection;
-    let url = std::env::var("TEST_DATABASE_URL").expect("guard runs only with a test database");
-    let mut conn = sqlx::PgConnection::connect(&url).await.expect("lock connection");
-    sqlx::query("SELECT pg_advisory_lock(73461122)")
-        .execute(&mut conn)
-        .await
-        .expect("advisory lock");
-    conn
 }
 
 async fn mount_memorize_ok(server: &MockServer) {
