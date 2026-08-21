@@ -1527,7 +1527,7 @@ async fn weekly_report_counts_recent_activity() {
     let inbound =
         prospecting_agent::domain::Engagement::inbound(contact.id, Channel::Email, EngagementKind::Replied);
     db::engagements::insert(&pool, &inbound).await.unwrap();
-    let report = prospecting_agent::workflows::reporting::weekly_report(&pool, 7)
+    let report = prospecting_agent::workflows::reporting::activity_report(&pool, 7)
         .await
         .unwrap();
     assert!(report.emails_sent >= 1);
@@ -1607,4 +1607,26 @@ async fn contact_enrichment_error_leaves_the_contact_new_and_counts_the_failure(
     assert!(report.credits_spent >= 1);
     let after = db::contacts::by_email(&pool, &email).await.unwrap().unwrap();
     assert_eq!(after.status, prospecting_agent::domain::ContactStatus::New);
+}
+
+#[tokio::test]
+async fn activity_report_window_actually_narrows() {
+    let pool = require_pool!();
+    let mut contact = prospecting_agent::domain::Contact::new(prospecting_agent::domain::ContactSource::Csv);
+    contact.email = Some(format!(
+        "window-{}@report.example.com",
+        uuid::Uuid::new_v4().simple()
+    ));
+    db::contacts::upsert(&pool, &contact).await.unwrap();
+    let mut sent =
+        prospecting_agent::domain::Engagement::outbound(contact.id, Channel::Email, EngagementKind::Sent);
+    sent.occurred_at = chrono::Utc::now() - chrono::Duration::days(3);
+    db::engagements::insert(&pool, &sent).await.unwrap();
+    let wide = prospecting_agent::workflows::reporting::activity_report(&pool, 7)
+        .await
+        .unwrap();
+    let narrow = prospecting_agent::workflows::reporting::activity_report(&pool, 1)
+        .await
+        .unwrap();
+    assert!(wide.emails_sent > narrow.emails_sent);
 }

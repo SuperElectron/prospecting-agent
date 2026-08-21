@@ -250,7 +250,7 @@ async fn activity_report(
     window_days: i32,
     label: &str,
 ) -> Result<serde_json::Value, JobError> {
-    let report = reporting::weekly_report(&ctx.pool, window_days).await?;
+    let report = reporting::activity_report(&ctx.pool, window_days).await?;
     if let Err(e) = ctx
         .notifier
         .notify(NotifyLevel::Info, &report.render_with_label(label))

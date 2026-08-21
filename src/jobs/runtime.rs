@@ -20,7 +20,7 @@ const DEFAULT_SCHEDULES: [(JobKind, &str); 11] = [
     (JobKind::OutreachSequence, "0 15 7 * * *"),
     (JobKind::OutreachSend, "0 10 * * * *"),
     (JobKind::TaskExecutor, "0 5,35 * * * *"),
-    (JobKind::DailyDigest, "0 30 8 * * *"),
+    (JobKind::DailyDigest, "0 30 16 * * *"),
     (JobKind::WeeklyReport, "0 0 9 * * Mon"),
 ];
 
