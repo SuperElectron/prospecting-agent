@@ -37,7 +37,7 @@ pub struct DiscoveryReport {
 }
 
 impl DiscoveryReport {
-    fn absorb(&mut self, other: &DiscoveryReport) {
+    pub(crate) fn absorb(&mut self, other: &DiscoveryReport) {
         self.discovered += other.discovered;
         self.already_known += other.already_known;
         self.no_match += other.no_match;
