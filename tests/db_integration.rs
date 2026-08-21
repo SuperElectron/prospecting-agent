@@ -322,34 +322,71 @@ async fn capacity_reservation_enforces_daily_cap() {
 }
 
 #[tokio::test]
-async fn companies_without_contacts_rank_by_icp_score() {
+async fn companies_without_contacts_rank_by_icp_score_with_cooldown_and_exclusions() {
     let pool = require_pool!();
     let stamp = uuid::Uuid::new_v4().simple().to_string();
     let lonely_high = format!("lonely-high-{stamp}.example.com");
     let lonely_low = format!("lonely-low-{stamp}.example.com");
+    let lonely_unscored = format!("lonely-unscored-{stamp}.example.com");
     let staffed = format!("staffed-{stamp}.example.com");
-    let mut company = Company::new(&lonely_high);
-    company.icp_fit_score = Some(95);
-    db::companies::upsert(&pool, &company).await.unwrap();
-    let mut company = Company::new(&lonely_low);
-    company.icp_fit_score = Some(10);
-    db::companies::upsert(&pool, &company).await.unwrap();
-    let mut company = Company::new(&staffed);
-    company.icp_fit_score = Some(99);
-    db::companies::upsert(&pool, &company).await.unwrap();
-    let mut contact = Contact::new(ContactSource::Csv);
-    contact.email = Some(format!("someone@{staffed}"));
-    contact.company_domain = Some(staffed.clone());
-    db::contacts::upsert(&pool, &contact).await.unwrap();
+    let attempted_recently = format!("attempted-{stamp}.example.com");
+    for (domain, score) in [
+        (&lonely_high, Some(95)),
+        (&lonely_low, Some(10)),
+        (&lonely_unscored, None),
+        (&staffed, Some(99)),
+        (&attempted_recently, Some(97)),
+    ] {
+        let mut company = Company::new(domain);
+        company.icp_fit_score = score;
+        db::companies::upsert(&pool, &company).await.unwrap();
+    }
+    let mut staffed_contact = Contact::new(ContactSource::Csv);
+    staffed_contact.email = Some(format!("someone@{staffed}"));
+    staffed_contact.company_domain = Some(format!("HTTPS://WWW.{}/", staffed.to_uppercase()));
+    db::contacts::upsert(&pool, &staffed_contact).await.unwrap();
+    let mut homeless_contact = Contact::new(ContactSource::Csv);
+    homeless_contact.email = Some(format!("nowhere-{stamp}@example.com"));
+    homeless_contact.company_domain = None;
+    db::contacts::upsert(&pool, &homeless_contact).await.unwrap();
+    db::companies::mark_discovery_attempted(&pool, &attempted_recently)
+        .await
+        .unwrap();
 
     let listed = db::companies::list_without_contacts(&pool, 100_000)
         .await
         .unwrap();
-    let domains: Vec<&str> = listed.iter().map(|c| c.domain.as_str()).collect();
+    let domains: Vec<&str> = listed.iter().map(|company| company.domain.as_str()).collect();
     assert!(domains.contains(&lonely_high.as_str()));
     assert!(domains.contains(&lonely_low.as_str()));
+    assert!(domains.contains(&lonely_unscored.as_str()));
     assert!(!domains.contains(&staffed.as_str()));
+    assert!(!domains.contains(&attempted_recently.as_str()));
     let high_pos = domains.iter().position(|d| *d == lonely_high).unwrap();
     let low_pos = domains.iter().position(|d| *d == lonely_low).unwrap();
+    let unscored_pos = domains.iter().position(|d| *d == lonely_unscored).unwrap();
     assert!(high_pos < low_pos);
+    assert!(low_pos < unscored_pos);
+}
+
+#[tokio::test]
+async fn discovery_listing_breaks_score_ties_by_oldest_and_honors_limit() {
+    let pool = require_pool!();
+    let stamp = uuid::Uuid::new_v4().simple().to_string();
+    let older = format!("tie-older-{stamp}.example.com");
+    let newer = format!("tie-newer-{stamp}.example.com");
+    for domain in [&older, &newer] {
+        let mut company = Company::new(domain);
+        company.icp_fit_score = Some(88);
+        db::companies::upsert(&pool, &company).await.unwrap();
+    }
+    let listed = db::companies::list_without_contacts(&pool, 100_000)
+        .await
+        .unwrap();
+    let older_pos = listed.iter().position(|company| company.domain == older).unwrap();
+    let newer_pos = listed.iter().position(|company| company.domain == newer).unwrap();
+    assert!(older_pos < newer_pos);
+
+    let capped = db::companies::list_without_contacts(&pool, 1).await.unwrap();
+    assert_eq!(capped.len(), 1);
 }
