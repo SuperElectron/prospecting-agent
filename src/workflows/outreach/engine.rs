@@ -229,6 +229,10 @@ async fn deliver<T: EmailTransport>(
     if let Err(e) = transport.send(&outbound).await {
         tracing::warn!(contact = %contact.id, error = %e, "outreach send failed; cadence slot burned");
         report.send_failed += 1;
+        if state.stopped {
+            state.stop_reason = Some(StopReason::Manual);
+            db::sequences::upsert(pool, &*state).await?;
+        }
         return Ok(());
     }
     report.sent += 1;

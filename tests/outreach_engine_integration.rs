@@ -513,10 +513,53 @@ async fn failed_send_burns_the_slot_without_recording_an_engagement() {
         .unwrap()
         .unwrap();
     assert_eq!(state.current_step, 1);
+    assert!(!state.stopped);
     assert!(
         db::engagements::for_contact(&pool, contact.id, 10)
             .await
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn final_step_send_failure_is_not_recorded_as_a_completion() {
+    let pool = require_pool!();
+    let _sweep = SWEEP_LOCK.lock().await;
+    let llm_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    mount_llm_email(&llm_server).await;
+    mount_memory_ok(&memory_server).await;
+    let contact = seed_contact(&pool, ContactStatus::InSequence).await;
+    let mut state = SequenceState::start(contact.id, "standard", 3);
+    state.current_step = 2;
+    state.last_sent_at = Some(Utc.with_ymd_and_hms(2026, 8, 11, 10, 0, 0).unwrap());
+    db::sequences::upsert(&pool, &state).await.unwrap();
+    let memory = memory_client(&memory_server);
+    let llm = llm_client(&llm_server);
+    let policies = prospecting_agent::llm::default_policies();
+    let rules = MessagingRules::default();
+    let preflight = PreflightConfig::default();
+    let report = run_send_pass(
+        &pool,
+        &inputs(
+            &memory,
+            &llm,
+            &policies,
+            &rules,
+            &preflight,
+            Some(&FailingTransport),
+            false,
+        ),
+        tuesday_morning(),
+    )
+    .await
+    .unwrap();
+    assert!(report.send_failed >= 1);
+    let after = db::sequences::for_contact(&pool, contact.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(after.stopped);
+    assert_eq!(after.stop_reason, Some(StopReason::Manual));
 }
