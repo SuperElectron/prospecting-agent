@@ -1,4 +1,7 @@
+mod common;
+
 use chrono::{TimeZone, Utc};
+use common::cross_process_sweep_lock;
 use prospecting_agent::config::{AppConfig, MessagingRules, Secret};
 use prospecting_agent::connectors::gmail::{GmailConnector, OauthClient, SenderAccount};
 use prospecting_agent::db;
@@ -10,6 +13,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 struct Rig {
     ctx: JobContext,
+    seed_dir: std::path::PathBuf,
     apollo: MockServer,
     tavily: MockServer,
     llm: MockServer,
@@ -64,6 +68,7 @@ async fn mount_baseline(memory: &MockServer, gmail: &MockServer) {
             ResponseTemplate::new(200)
                 .set_body_json(serde_json::json!({"access_token": "at-1", "expires_in": 3599})),
         )
+        .expect(1..)
         .mount(gmail)
         .await;
 }
@@ -104,6 +109,7 @@ async fn rig() -> Option<Rig> {
         ("GMAIL_CLIENT_FILE", "/nonexistent/client.json"),
         ("GMAIL_SENDERS_FILE", "/nonexistent/senders.json"),
         ("DRY_RUN", "false"),
+        ("APOLLO_DAILY_CREDIT_CAP", "60000"),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -129,7 +135,7 @@ async fn rig() -> Option<Rig> {
     });
     let oauth = OauthClient::new("cid", Secret::new("csec")).with_bases(&gmail.uri(), &gmail.uri());
     let sender = SenderAccount {
-        email: "sender@e2e.example.com".into(),
+        email: format!("sender-{stamp}@e2e.example.com"),
         name: "E2E Sender".into(),
         refresh_token: "rt-e2e".into(),
         daily_limit: 50,
@@ -138,6 +144,7 @@ async fn rig() -> Option<Rig> {
 
     Some(Rig {
         ctx,
+        seed_dir: dir,
         apollo,
         tavily,
         llm,
@@ -165,6 +172,7 @@ async fn stage_enrich(rig: &Rig) {
                         "organization": {"id": "o-1", "primary_domain": domain,
                                           "estimated_num_employees": 120}},
         })))
+        .with_priority(1)
         .mount(apollo)
         .await;
     Mock::given(method("POST"))
@@ -187,7 +195,7 @@ async fn stage_send(rig: &Rig) {
     } = rig;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .and(body_string_contains("outreach"))
+        .and(body_string_contains("personalization_fact"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
                 "subject": "Scaling the AE ramp",
@@ -220,6 +228,25 @@ async fn stage_send(rig: &Rig) {
     };
     let send = run_send_pass(&ctx.pool, &inputs, tuesday).await.unwrap();
     assert!(send.sent >= 1);
+    let decoded_sends: Vec<String> = gmail
+        .received_requests()
+        .await
+        .expect("request recording enabled")
+        .into_iter()
+        .filter(|request| request.url.path().ends_with("/messages/send"))
+        .filter_map(|request| {
+            let payload: serde_json::Value = serde_json::from_slice(&request.body).ok()?;
+            let raw = payload["raw"].as_str()?;
+            let bytes =
+                base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, raw).ok()?;
+            String::from_utf8(bytes).ok()
+        })
+        .collect();
+    let mine = decoded_sends
+        .iter()
+        .find(|mime| mime.contains(&format!("To: {email}")))
+        .unwrap_or_else(|| panic!("no decoded send addressed to the rig contact; sends: {decoded_sends:?}"));
+    assert!(mine.contains("Subject: "), "mime: {mine}");
     let contact = db::contacts::by_email(&ctx.pool, email).await.unwrap().unwrap();
     let state = db::sequences::for_contact(&ctx.pool, contact.id)
         .await
@@ -287,6 +314,7 @@ async fn stage_reply(rig: &Rig) {
 #[tokio::test]
 async fn full_funnel_from_csv_to_reply_and_report() {
     let Some(rig) = rig().await else { return };
+    let _sweep = cross_process_sweep_lock().await;
     let ctx = &rig.ctx;
 
     let sync = run_job(ctx, JobKind::CsvSync).await.unwrap();
@@ -338,4 +366,6 @@ async fn full_funnel_from_csv_to_reply_and_report() {
     assert!(report["emails_sent"].as_i64().unwrap() >= 1);
     assert!(report["replies"].as_i64().unwrap() >= 1);
     assert!(report["contacts_added"].as_i64().unwrap() >= 1);
+
+    std::fs::remove_dir_all(&rig.seed_dir).ok();
 }
