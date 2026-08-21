@@ -45,21 +45,27 @@ struct RecordingTransport {
 }
 
 impl EmailTransport for RecordingTransport {
-    async fn send(&self, email: &OutboundEmail) -> Result<SendReceipt, ConnectorError> {
+    fn send(
+        &self,
+        email: &OutboundEmail,
+    ) -> impl Future<Output = Result<SendReceipt, ConnectorError>> + Send {
         self.sent.lock().unwrap().push(email.clone());
-        Ok(SendReceipt {
+        std::future::ready(Ok(SendReceipt {
             message_id: "m-1".into(),
             thread_id: "t-1".into(),
             sender_email: "sender@test.example.com".into(),
-        })
+        }))
     }
 }
 
 struct FailingTransport;
 
 impl EmailTransport for FailingTransport {
-    async fn send(&self, _email: &OutboundEmail) -> Result<SendReceipt, ConnectorError> {
-        Err(ConnectorError::NoSenders)
+    fn send(
+        &self,
+        _email: &OutboundEmail,
+    ) -> impl Future<Output = Result<SendReceipt, ConnectorError>> + Send {
+        std::future::ready(Err(ConnectorError::NoSenders))
     }
 }
 

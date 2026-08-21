@@ -19,13 +19,17 @@ pub trait Notifier {
 pub struct LogNotifier;
 
 impl Notifier for LogNotifier {
-    async fn notify(&self, level: NotifyLevel, message: &str) -> Result<(), ConnectorError> {
+    fn notify(
+        &self,
+        level: NotifyLevel,
+        message: &str,
+    ) -> impl Future<Output = Result<(), ConnectorError>> + Send {
         match level {
             NotifyLevel::Info => tracing::info!(target: "notify", "{message}"),
             NotifyLevel::Warning => tracing::warn!(target: "notify", "{message}"),
             NotifyLevel::Error => tracing::error!(target: "notify", "{message}"),
         }
-        Ok(())
+        std::future::ready(Ok(()))
     }
 }
 
