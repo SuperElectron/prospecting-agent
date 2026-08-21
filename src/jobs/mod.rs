@@ -16,6 +16,7 @@ use crate::workflows::{discovery, reporting, research, sync};
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
     CsvSync,
+    DiscoverContacts,
     EnrichContacts,
     EnrichCompanies,
     ResearchCompanies,
@@ -25,8 +26,9 @@ pub enum JobKind {
 }
 
 impl JobKind {
-    pub const ALL: [JobKind; 7] = [
+    pub const ALL: [JobKind; 8] = [
         JobKind::CsvSync,
+        JobKind::DiscoverContacts,
         JobKind::EnrichContacts,
         JobKind::EnrichCompanies,
         JobKind::ResearchCompanies,
@@ -38,6 +40,7 @@ impl JobKind {
     pub fn as_str(self) -> &'static str {
         match self {
             JobKind::CsvSync => "csv_sync",
+            JobKind::DiscoverContacts => "discover_contacts",
             JobKind::EnrichContacts => "enrich_contacts",
             JobKind::EnrichCompanies => "enrich_companies",
             JobKind::ResearchCompanies => "research_companies",
@@ -136,6 +139,7 @@ impl JobContext {
 }
 
 const RESEARCH_BATCH: i64 = 3;
+const DISCOVER_BATCH: i64 = 5;
 const ENRICH_LIMIT: i64 = 25;
 const ENRICH_CREDITS: u16 = 10;
 
@@ -160,6 +164,25 @@ pub async fn run_job(ctx: &JobContext, kind: JobKind) -> Result<serde_json::Valu
         JobKind::CsvSync => {
             let report = sync::sync_dir(&ctx.pool, &ctx.memory, &ctx.config.csv_data_dir).await?;
             Ok(serde_json::to_value(report)?)
+        }
+        JobKind::DiscoverContacts => {
+            let companies = crate::db::companies::list_without_contacts(&ctx.pool, DISCOVER_BATCH)
+                .await
+                .map_err(discovery::DiscoveryError::from)?;
+            let domains: Vec<String> = companies.into_iter().map(|company| company.domain).collect();
+            let report = discovery::source_contacts(
+                &ctx.pool,
+                &ctx.memory,
+                &ctx.apollo,
+                &crate::config::IcpCriteria::default(),
+                &domains,
+                &discovery::DiscoveryBudget::default(),
+            )
+            .await?;
+            Ok(serde_json::json!({
+                "domains": domains,
+                "report": serde_json::to_value(report)?,
+            }))
         }
         JobKind::EnrichContacts => {
             let mut credits = ENRICH_CREDITS;

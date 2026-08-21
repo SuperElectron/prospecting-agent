@@ -320,3 +320,36 @@ async fn capacity_reservation_enforces_daily_cap() {
     assert_eq!(db::capacity::sent_today(&pool, &sender, day).await.unwrap(), 2);
     assert!(!db::capacity::try_reserve(&pool, &sender, day, 0).await.unwrap());
 }
+
+#[tokio::test]
+async fn companies_without_contacts_rank_by_icp_score() {
+    let pool = require_pool!();
+    let stamp = uuid::Uuid::new_v4().simple().to_string();
+    let lonely_high = format!("lonely-high-{stamp}.example.com");
+    let lonely_low = format!("lonely-low-{stamp}.example.com");
+    let staffed = format!("staffed-{stamp}.example.com");
+    let mut company = Company::new(&lonely_high);
+    company.icp_fit_score = Some(95);
+    db::companies::upsert(&pool, &company).await.unwrap();
+    let mut company = Company::new(&lonely_low);
+    company.icp_fit_score = Some(10);
+    db::companies::upsert(&pool, &company).await.unwrap();
+    let mut company = Company::new(&staffed);
+    company.icp_fit_score = Some(99);
+    db::companies::upsert(&pool, &company).await.unwrap();
+    let mut contact = Contact::new(ContactSource::Csv);
+    contact.email = Some(format!("someone@{staffed}"));
+    contact.company_domain = Some(staffed.clone());
+    db::contacts::upsert(&pool, &contact).await.unwrap();
+
+    let listed = db::companies::list_without_contacts(&pool, 100_000)
+        .await
+        .unwrap();
+    let domains: Vec<&str> = listed.iter().map(|c| c.domain.as_str()).collect();
+    assert!(domains.contains(&lonely_high.as_str()));
+    assert!(domains.contains(&lonely_low.as_str()));
+    assert!(!domains.contains(&staffed.as_str()));
+    let high_pos = domains.iter().position(|d| *d == lonely_high).unwrap();
+    let low_pos = domains.iter().position(|d| *d == lonely_low).unwrap();
+    assert!(high_pos < low_pos);
+}
