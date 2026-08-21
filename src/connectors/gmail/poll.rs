@@ -21,10 +21,18 @@ pub struct InboundMessage {
     pub snippet: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessagePage {
+    pub messages: Vec<MessageRef>,
+    pub next_page_token: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct ListResponse {
     #[serde(default)]
     messages: Vec<MessageRef>,
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -55,18 +63,24 @@ impl GmailConnector {
         sender_email: &str,
         query: &str,
         max_results: u16,
-    ) -> Result<Vec<MessageRef>, ConnectorError> {
+        page_token: Option<&str>,
+    ) -> Result<MessagePage, ConnectorError> {
         let sender = self.sender_account(sender_email)?;
         let token = self
             .oauth()
             .access_token(self.http(), &sender.refresh_token)
             .await?;
         let url = format!("{}/gmail/v1/users/me/messages", self.api_base());
+        let max = max_results.to_string();
+        let mut params = vec![("q", query), ("maxResults", max.as_str())];
+        if let Some(token_value) = page_token {
+            params.push(("pageToken", token_value));
+        }
         let resp = self
             .http()
             .get(&url)
             .bearer_auth(token)
-            .query(&[("q", query), ("maxResults", &max_results.to_string())])
+            .query(&params)
             .send()
             .await?;
         if !resp.status().is_success() {
@@ -77,7 +91,10 @@ impl GmailConnector {
         let raw = resp.text().await?;
         let parsed: ListResponse =
             serde_json::from_str(&raw).map_err(|e| ConnectorError::Decode(e.to_string()))?;
-        Ok(parsed.messages)
+        Ok(MessagePage {
+            messages: parsed.messages,
+            next_page_token: parsed.next_page_token,
+        })
     }
 
     pub async fn fetch_message(

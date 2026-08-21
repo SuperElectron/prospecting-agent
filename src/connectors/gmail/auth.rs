@@ -29,12 +29,23 @@ struct ClientEntry {
     client_secret: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct SenderAccount {
     pub email: String,
     pub name: String,
     pub refresh_token: String,
     pub daily_limit: i32,
+}
+
+impl std::fmt::Debug for SenderAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SenderAccount")
+            .field("email", &self.email)
+            .field("name", &self.name)
+            .field("refresh_token", &"***")
+            .field("daily_limit", &self.daily_limit)
+            .finish()
+    }
 }
 
 #[derive(Deserialize)]
@@ -77,7 +88,8 @@ impl OauthClient {
         self
     }
 
-    pub fn auth_url(&self, redirect_uri: &str) -> String {
+    pub fn auth_url(&self, redirect_uri: &str, challenge: &AuthChallenge) -> String {
+        let code_challenge = challenge.code_challenge();
         let query = [
             ("client_id", self.client_id.as_str()),
             ("redirect_uri", redirect_uri),
@@ -85,6 +97,9 @@ impl OauthClient {
             ("scope", SCOPES),
             ("access_type", "offline"),
             ("prompt", "consent"),
+            ("state", challenge.state.as_str()),
+            ("code_challenge", code_challenge.as_str()),
+            ("code_challenge_method", "S256"),
         ];
         let encoded: Vec<String> = query
             .iter()
@@ -98,6 +113,7 @@ impl OauthClient {
         http: &reqwest::Client,
         code: &str,
         redirect_uri: &str,
+        challenge: &AuthChallenge,
     ) -> Result<String, ConnectorError> {
         let form = [
             ("client_id", self.client_id.as_str()),
@@ -105,6 +121,7 @@ impl OauthClient {
             ("code", code),
             ("redirect_uri", redirect_uri),
             ("grant_type", "authorization_code"),
+            ("code_verifier", challenge.verifier.as_str()),
         ];
         let parsed = self.token_request(http, &form).await?;
         parsed
@@ -143,6 +160,32 @@ impl OauthClient {
         }
         let raw = resp.text().await?;
         serde_json::from_str(&raw).map_err(|e| ConnectorError::Decode(e.to_string()))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthChallenge {
+    pub state: String,
+    pub verifier: String,
+}
+
+impl AuthChallenge {
+    pub fn generate() -> Self {
+        Self {
+            state: uuid::Uuid::new_v4().simple().to_string(),
+            verifier: format!(
+                "{}{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            ),
+        }
+    }
+
+    pub fn code_challenge(&self) -> String {
+        use base64::Engine;
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(self.verifier.as_bytes());
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
     }
 }
 
@@ -218,13 +261,17 @@ mod tests {
     #[test]
     fn auth_url_carries_scopes_offline_access_and_consent() {
         let server_free = OauthClient::new("cid", Secret::new("csec"));
-        let url = server_free.auth_url("http://localhost:3847/oauth2callback");
+        let challenge = AuthChallenge::generate();
+        let url = server_free.auth_url("http://localhost:3847/oauth2callback", &challenge);
         assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
         assert!(url.contains("gmail.send"));
         assert!(url.contains("gmail.readonly"));
         assert!(url.contains("access_type=offline"));
         assert!(url.contains("prompt=consent"));
         assert!(url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A3847%2Foauth2callback"));
+        assert!(url.contains(&format!("state={}", challenge.state)));
+        assert!(url.contains("code_challenge_method=S256"));
+        assert!(url.contains(&format!("code_challenge={}", challenge.code_challenge())));
     }
 
     #[tokio::test]
@@ -233,6 +280,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/token"))
             .and(body_string_contains("grant_type=authorization_code"))
+            .and(body_string_contains("code_verifier="))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "access_token": "at-1", "refresh_token": "rt-1", "expires_in": 3599,
             })))
@@ -241,7 +289,12 @@ mod tests {
             .await;
         let http = reqwest::Client::new();
         let token = client(&server)
-            .exchange_code(&http, "auth-code", "http://localhost:3847/oauth2callback")
+            .exchange_code(
+                &http,
+                "auth-code",
+                "http://localhost:3847/oauth2callback",
+                &AuthChallenge::generate(),
+            )
             .await
             .unwrap();
         assert_eq!(token, "rt-1");

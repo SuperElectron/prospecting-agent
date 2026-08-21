@@ -31,19 +31,31 @@ pub struct HealthReport {
     pub checks: Vec<Check>,
 }
 
+pub enum DbProbe<'a> {
+    Pool(&'a PgPool),
+    Unavailable(String),
+    NotConfigured,
+}
+
 pub struct HealthInputs<'a> {
-    pub pool: Option<&'a PgPool>,
+    pub db: DbProbe<'a>,
     pub llm_base_url: Option<&'a str>,
     pub memory_base_url: Option<&'a str>,
+    pub gmail: Option<&'a crate::connectors::gmail::OauthClient>,
     pub senders: &'a [SenderAccount],
 }
 
 pub async fn run_health_check(inputs: &HealthInputs<'_>) -> HealthReport {
     let mut checks = Vec::new();
-    checks.push(check_db(inputs.pool).await);
+    checks.push(check_db(&inputs.db).await);
     checks.push(check_http("llm", inputs.llm_base_url, "/models").await);
-    checks.push(check_http("memory", inputs.memory_base_url, "/docs").await);
-    checks.push(check_capacity(inputs.pool, inputs.senders).await);
+    checks.push(check_http("memory", inputs.memory_base_url, "/api/v1/config/").await);
+    checks.push(check_gmail(inputs.gmail, inputs.senders).await);
+    let pool = match &inputs.db {
+        DbProbe::Pool(pool) => Some(*pool),
+        _ => None,
+    };
+    checks.push(check_capacity(pool, inputs.senders).await);
     let status = if checks.iter().any(|c| c.status == CheckStatus::Error) {
         CheckStatus::Error
     } else if checks
@@ -61,14 +73,45 @@ pub async fn run_health_check(inputs: &HealthInputs<'_>) -> HealthReport {
     }
 }
 
-async fn check_db(pool: Option<&PgPool>) -> Check {
+async fn check_db(probe: &DbProbe<'_>) -> Check {
     let start = Instant::now();
-    let Some(pool) = pool else {
-        return check("database", CheckStatus::NotConfigured, start, "no pool".into());
+    match probe {
+        DbProbe::NotConfigured => check(
+            "database",
+            CheckStatus::NotConfigured,
+            start,
+            "no url configured".into(),
+        ),
+        DbProbe::Unavailable(reason) => check("database", CheckStatus::Error, start, reason.clone()),
+        DbProbe::Pool(pool) => match sqlx::query("SELECT 1").execute(*pool).await {
+            Ok(_) => check("database", CheckStatus::Ok, start, "reachable".into()),
+            Err(e) => check("database", CheckStatus::Error, start, e.to_string()),
+        },
+    }
+}
+
+async fn check_gmail(
+    oauth: Option<&crate::connectors::gmail::OauthClient>,
+    senders: &[SenderAccount],
+) -> Check {
+    let start = Instant::now();
+    let (Some(oauth), Some(sender)) = (oauth, senders.first()) else {
+        return check(
+            "gmail",
+            CheckStatus::NotConfigured,
+            start,
+            "no oauth client or authorized sender".into(),
+        );
     };
-    match sqlx::query("SELECT 1").execute(pool).await {
-        Ok(_) => check("database", CheckStatus::Ok, start, "reachable".into()),
-        Err(e) => check("database", CheckStatus::Error, start, e.to_string()),
+    let http = reqwest::Client::new();
+    match oauth.access_token(&http, &sender.refresh_token).await {
+        Ok(_) => check(
+            "gmail",
+            CheckStatus::Ok,
+            start,
+            format!("token refresh ok for {}", sender.email),
+        ),
+        Err(e) => check("gmail", CheckStatus::Error, start, e.to_string()),
     }
 }
 
@@ -158,9 +201,10 @@ mod tests {
     #[tokio::test]
     async fn unconfigured_everything_is_degraded_not_error() {
         let inputs = HealthInputs {
-            pool: None,
+            db: DbProbe::NotConfigured,
             llm_base_url: None,
             memory_base_url: None,
+            gmail: None,
             senders: &[],
         };
         let report = run_health_check(&inputs).await;
@@ -203,12 +247,28 @@ mod tests {
             .await;
         let base = bad.uri();
         let inputs = HealthInputs {
-            pool: None,
+            db: DbProbe::NotConfigured,
             llm_base_url: Some(&base),
             memory_base_url: None,
+            gmail: None,
             senders: &[],
         };
         let report = run_health_check(&inputs).await;
         assert_eq!(report.status, CheckStatus::Error);
+    }
+
+    #[tokio::test]
+    async fn unreachable_database_is_an_error_not_degraded() {
+        let inputs = HealthInputs {
+            db: DbProbe::Unavailable("connection refused".into()),
+            llm_base_url: None,
+            memory_base_url: None,
+            gmail: None,
+            senders: &[],
+        };
+        let report = run_health_check(&inputs).await;
+        assert_eq!(report.status, CheckStatus::Error);
+        let db_check = report.checks.iter().find(|c| c.name == "database").unwrap();
+        assert_eq!(db_check.status, CheckStatus::Error);
     }
 }

@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 use prospecting_agent::cli::{GmailAuthArgs, run_gmail_auth};
 use prospecting_agent::config::AppConfig;
-use prospecting_agent::connectors::gmail::load_senders;
-use prospecting_agent::connectors::health::{HealthInputs, run_health_check};
+use prospecting_agent::connectors::gmail::{OauthClient, load_senders};
+use prospecting_agent::connectors::health::{CheckStatus, DbProbe, HealthInputs, run_health_check};
 use prospecting_agent::{db, observability};
 
 #[derive(Parser)]
@@ -53,40 +53,36 @@ async fn gmail_auth(daily_limit: i32) -> Result<(), String> {
 
 async fn health() -> Result<(), String> {
     let config = AppConfig::from_env().map_err(|e| e.to_string())?;
-    let pool = db::connect(config.database_url.expose()).await.ok();
-    let senders = config
-        .email
-        .gmail
-        .as_ref()
+    let pool = db::connect(config.database_url.expose()).await;
+    let db_probe = match &pool {
+        Ok(pool) => DbProbe::Pool(pool),
+        Err(e) => DbProbe::Unavailable(e.to_string()),
+    };
+    let gmail_config = config.email.gmail.as_ref();
+    let oauth = gmail_config.and_then(|g| OauthClient::from_file(&g.client_file).ok());
+    let senders = gmail_config
         .and_then(|g| load_senders(&g.senders_file).ok())
         .unwrap_or_default();
     let report = run_health_check(&HealthInputs {
-        pool: pool.as_ref(),
+        db: db_probe,
         llm_base_url: Some(&config.llm.base_url),
         memory_base_url: Some(&config.memory.base_url),
+        gmail: oauth.as_ref(),
         senders: &senders,
     })
     .await;
     let rendered = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     println!("{rendered}");
+    if report.status == CheckStatus::Error {
+        return Err("one or more health checks failed".into());
+    }
     Ok(())
 }
 
 fn gmail_config() -> Result<prospecting_agent::config::GmailConfig, String> {
-    let env: prospecting_agent::config::EnvMap = std::env::vars().collect();
-    AppConfig::from_map(&env)
-        .ok()
-        .and_then(|c| c.email.gmail)
-        .map_or_else(
-            || {
-                Ok(prospecting_agent::config::GmailConfig {
-                    client_file: std::env::var("GMAIL_CLIENT_FILE")
-                        .unwrap_or_else(|_| ".claude/secrets/gmail-oauth-client.json".into()),
-                    senders_file: std::env::var("GMAIL_SENDERS_FILE")
-                        .unwrap_or_else(|_| ".claude/secrets/gmail-senders.json".into()),
-                    auth_port: 3847,
-                })
-            },
-            Ok,
-        )
+    let config = AppConfig::from_env().map_err(|e| e.to_string())?;
+    config
+        .email
+        .gmail
+        .ok_or_else(|| "gmail is not the configured email provider".into())
 }

@@ -16,9 +16,9 @@ const REQUEST_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Debug, Deserialize)]
 struct SendResponse {
-    id: Option<String>,
+    id: String,
     #[serde(rename = "threadId")]
-    thread_id: Option<String>,
+    thread_id: String,
 }
 
 #[derive(Clone)]
@@ -111,8 +111,8 @@ impl GmailConnector {
         let parsed: SendResponse =
             serde_json::from_str(&raw_body).map_err(|e| ConnectorError::Decode(e.to_string()))?;
         Ok(SendReceipt {
-            message_id: parsed.id.unwrap_or_default(),
-            thread_id: parsed.thread_id.unwrap_or_default(),
+            message_id: parsed.id,
+            thread_id: parsed.thread_id,
             sender_email: sender.email.clone(),
         })
     }
@@ -127,8 +127,10 @@ impl EmailTransport for GmailConnector {
         let sender = self.reserve_sender(prefer).await?;
         let boundary = format!("boundary_{}", uuid::Uuid::new_v4().simple());
         let subject = match &email.thread {
-            Some(thread) => reply_subject(thread.original_subject.as_deref(), &email.subject),
-            None => email.subject.clone(),
+            Some(thread) if thread.in_reply_to.is_some() => {
+                reply_subject(thread.original_subject.as_deref(), &email.subject)
+            }
+            _ => email.subject.clone(),
         };
         let empty: [String; 0] = [];
         let mime = build_mime(&MimeParams {
@@ -141,7 +143,7 @@ impl EmailTransport for GmailConnector {
             in_reply_to: email.thread.as_ref().and_then(|t| t.in_reply_to.as_deref()),
             references: email.thread.as_ref().map_or(&empty[..], |t| &t.references),
             boundary: &boundary,
-        });
+        })?;
         let thread_id = email
             .thread
             .as_ref()

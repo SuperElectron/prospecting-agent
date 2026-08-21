@@ -57,6 +57,9 @@ pub enum EmailProvider {
     Sendgrid,
 }
 
+pub const GMAIL_CLIENT_FILE_DEFAULT: &str = ".claude/secrets/gmail-oauth-client.json";
+pub const GMAIL_SENDERS_FILE_DEFAULT: &str = ".claude/secrets/gmail-senders.json";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct GmailConfig {
     pub client_file: String,
@@ -155,8 +158,8 @@ fn gmail_from_map(env: &EnvMap, is_selected: bool) -> Result<Option<GmailConfig>
             reason: "must be a port number".into(),
         })?;
     Ok(Some(GmailConfig {
-        client_file: client_file.unwrap_or_else(|| ".claude/secrets/gmail-oauth-client.json".into()),
-        senders_file: get_or(env, "GMAIL_SENDERS_FILE", ".claude/secrets/gmail-senders.json"),
+        client_file: client_file.unwrap_or_else(|| GMAIL_CLIENT_FILE_DEFAULT.into()),
+        senders_file: get_or(env, "GMAIL_SENDERS_FILE", GMAIL_SENDERS_FILE_DEFAULT),
         auth_port,
     }))
 }
@@ -236,8 +239,8 @@ mod tests {
         assert!(cfg.dry_run);
         assert_eq!(cfg.llm.api_key.expose(), "local");
         let gmail = cfg.email.gmail.unwrap();
-        assert_eq!(gmail.client_file, ".claude/secrets/gmail-oauth-client.json");
-        assert_eq!(gmail.senders_file, ".claude/secrets/gmail-senders.json");
+        assert_eq!(gmail.client_file, GMAIL_CLIENT_FILE_DEFAULT);
+        assert_eq!(gmail.senders_file, GMAIL_SENDERS_FILE_DEFAULT);
         assert_eq!(gmail.auth_port, 3847);
         assert!(cfg.linkedin.is_none());
         assert!(cfg.hubspot.is_none());

@@ -18,6 +18,8 @@ pub enum ConnectorError {
     NoCapacity { senders: usize },
     #[error("invalid recipient address: {0}")]
     InvalidRecipient(String),
+    #[error("header {header} carried a line break")]
+    HeaderInjection { header: &'static str },
     #[error("credential file problem at {path}: {reason}")]
     Credentials { path: String, reason: String },
     #[error("connector response shape unexpected: {0}")]

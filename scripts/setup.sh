@@ -39,6 +39,10 @@ cargo build --quiet
 set -a; . ./.env; set +a
 TEST_DATABASE_URL="${DATABASE_URL:-postgres://postgres:postgres@localhost:5432/prospecting}" cargo test --quiet
 
+if docker compose ps memory 2>/dev/null | grep -q Up; then
+  ./scripts/configure-memory.sh
+fi
+
 cat <<'EOF'
 == setup complete ==
 Next steps:

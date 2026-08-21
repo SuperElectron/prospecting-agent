@@ -1,6 +1,5 @@
 use prospecting_agent::config::Secret;
-use prospecting_agent::connectors::gmail::auth::SenderAccount;
-use prospecting_agent::connectors::gmail::{GmailConnector, OauthClient};
+use prospecting_agent::connectors::gmail::{GmailConnector, OauthClient, SenderAccount};
 use prospecting_agent::connectors::{ConnectorError, EmailTransport, OutboundEmail, ThreadContext};
 use wiremock::matchers::{body_partial_json, body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -192,12 +191,38 @@ async fn gmail_api_error_is_typed_with_status() {
 }
 
 #[tokio::test]
+async fn failed_send_still_burns_capacity_by_design() {
+    let pool = require_pool!();
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/gmail/v1/users/me/messages/send"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("backend error"))
+        .mount(&server)
+        .await;
+    let account = sender(&unique_sender("burn"), 5);
+    let connector =
+        GmailConnector::new(oauth(&server), vec![account.clone()], pool.clone()).with_api_base(&server.uri());
+    let _ = connector
+        .send(&OutboundEmail::new("jane@acme.io", "s", "b"))
+        .await
+        .unwrap_err();
+    let day = chrono::Utc::now().date_naive();
+    let sent = prospecting_agent::db::capacity::sent_today(&pool, &account.email, day)
+        .await
+        .unwrap();
+    assert_eq!(sent, 1);
+}
+
+#[tokio::test]
 async fn poll_lists_and_fetches_message_metadata() {
     let pool = require_pool!();
     let server = MockServer::start().await;
     mount_token(&server).await;
     Mock::given(method("GET"))
         .and(path("/gmail/v1/users/me/messages"))
+        .and(wiremock::matchers::query_param("q", "in:inbox newer_than:1d"))
+        .and(wiremock::matchers::query_param("maxResults", "10"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "messages": [{"id": "in-1", "threadId": "t-1"}],
         })))
@@ -206,6 +231,7 @@ async fn poll_lists_and_fetches_message_metadata() {
         .await;
     Mock::given(method("GET"))
         .and(path("/gmail/v1/users/me/messages/in-1"))
+        .and(wiremock::matchers::query_param("format", "metadata"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "id": "in-1", "threadId": "t-1", "snippet": "Thanks, interested!",
             "payload": {"headers": [
@@ -221,13 +247,14 @@ async fn poll_lists_and_fetches_message_metadata() {
     let account = sender(&unique_sender("poll"), 5);
     let connector =
         GmailConnector::new(oauth(&server), vec![account.clone()], pool).with_api_base(&server.uri());
-    let refs = connector
-        .list_messages(&account.email, "in:inbox newer_than:1d", 10)
+    let page = connector
+        .list_messages(&account.email, "in:inbox newer_than:1d", 10, None)
         .await
         .unwrap();
-    assert_eq!(refs.len(), 1);
+    assert_eq!(page.messages.len(), 1);
+    assert!(page.next_page_token.is_none());
     let message = connector
-        .fetch_message(&account.email, &refs[0].id)
+        .fetch_message(&account.email, &page.messages[0].id)
         .await
         .unwrap();
     assert_eq!(message.from.as_deref(), Some("Jane <jane@acme.io>"));
@@ -256,6 +283,7 @@ async fn token_exchange_failure_surfaces_as_auth_chain() {
 }
 
 #[tokio::test]
+#[ignore = "live gmail smoke: needs TEST_GMAIL_LIVE plus authorized sender; run with --ignored"]
 async fn live_gmail_self_send_and_poll_smoke() {
     if std::env::var("TEST_GMAIL_LIVE").is_err() {
         eprintln!("TEST_GMAIL_LIVE not set; skipping live gmail smoke");
@@ -280,15 +308,19 @@ async fn live_gmail_self_send_and_poll_smoke() {
         .await
         .unwrap();
     assert!(!receipt.message_id.is_empty());
-    let refs = connector
+    let page = connector
         .list_messages(
             &self_address,
             "newer_than:1d subject:(prospecting-agent live smoke)",
             5,
+            None,
         )
         .await
         .unwrap();
-    assert!(!refs.is_empty());
-    let message = connector.fetch_message(&self_address, &refs[0].id).await.unwrap();
+    assert!(!page.messages.is_empty());
+    let message = connector
+        .fetch_message(&self_address, &page.messages[0].id)
+        .await
+        .unwrap();
     assert_eq!(message.thread_id, receipt.thread_id);
 }

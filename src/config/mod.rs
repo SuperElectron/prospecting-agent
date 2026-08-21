@@ -7,8 +7,8 @@ pub mod targeting;
 
 pub use cadence::{Cadence, CadenceError, SendHours};
 pub use env::{
-    AppConfig, ConfigError, EmailConfig, EmailProvider, EnvMap, GmailConfig, HubspotConfig, LinkedinConfig,
-    LlmConfig, MemoryConfig,
+    AppConfig, ConfigError, EmailConfig, EmailProvider, EnvMap, GMAIL_CLIENT_FILE_DEFAULT,
+    GMAIL_SENDERS_FILE_DEFAULT, GmailConfig, HubspotConfig, LinkedinConfig, LlmConfig, MemoryConfig,
 };
 pub use messaging::{MessagingRules, MessagingViolation};
 pub use modes::AgentMode;
