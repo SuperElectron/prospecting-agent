@@ -371,7 +371,112 @@ async fn opted_out_contact_stops_the_sequence_before_any_send() {
 }
 
 #[tokio::test]
-async fn failed_send_leaves_the_sequence_unadvanced() {
+async fn follow_up_outside_the_window_waits_even_when_overdue() {
+    let pool = require_pool!();
+    let _sweep = SWEEP_LOCK.lock().await;
+    let llm_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    mount_llm_email(&llm_server).await;
+    mount_memory_ok(&memory_server).await;
+    let contact = seed_contact(&pool, ContactStatus::InSequence).await;
+    let mut state = SequenceState::start(contact.id, "standard", 3);
+    state.current_step = 1;
+    state.last_sent_at = Some(Utc.with_ymd_and_hms(2026, 8, 11, 10, 0, 0).unwrap());
+    db::sequences::upsert(&pool, &state).await.unwrap();
+    let memory = memory_client(&memory_server);
+    let llm = llm_client(&llm_server);
+    let policies = prospecting_agent::llm::default_policies();
+    let rules = MessagingRules::default();
+    let preflight = PreflightConfig::default();
+    let transport = RecordingTransport::default();
+    let report = run_send_pass(
+        &pool,
+        &inputs(
+            &memory,
+            &llm,
+            &policies,
+            &rules,
+            &preflight,
+            Some(&transport),
+            false,
+        ),
+        sunday_morning(),
+    )
+    .await
+    .unwrap();
+    assert!(report.outside_window >= 1);
+    let after = db::sequences::for_contact(&pool, contact.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.current_step, 1);
+    assert!(
+        !transport
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|email| email.to == contact.email.clone().unwrap())
+    );
+}
+
+#[tokio::test]
+async fn preflight_modify_caps_the_sequence_and_is_counted() {
+    let pool = require_pool!();
+    let _sweep = SWEEP_LOCK.lock().await;
+    let llm_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    mount_llm_email(&llm_server).await;
+    mount_memory_ok(&memory_server).await;
+    let domain = format!("warm-{}.example.com", uuid::Uuid::new_v4().simple());
+    let company = prospecting_agent::domain::Company::new(&domain);
+    db::companies::upsert(&pool, &company).await.unwrap();
+    let mut contact = seed_contact(&pool, ContactStatus::Enriched).await;
+    contact.company_domain = Some(domain.clone());
+    db::contacts::upsert(&pool, &contact).await.unwrap();
+    let strategy = prospecting_agent::domain::AccountStrategy {
+        domain: domain.clone(),
+        stage: prospecting_agent::domain::AccountStage::Engaged,
+        health: prospecting_agent::domain::AccountHealth::Healthy,
+        coordination_flags: vec![prospecting_agent::domain::FLAG_NEW_CONTACT_ADVANCED.to_string()],
+        summary: "advanced account; warm intro only".into(),
+        updated_at: Utc::now(),
+    };
+    db::strategies::upsert(&pool, &strategy).await.unwrap();
+    db::sequences::upsert(&pool, &SequenceState::start(contact.id, "standard", 3))
+        .await
+        .unwrap();
+    let memory = memory_client(&memory_server);
+    let llm = llm_client(&llm_server);
+    let policies = prospecting_agent::llm::default_policies();
+    let rules = MessagingRules::default();
+    let preflight = PreflightConfig::default();
+    let transport = RecordingTransport::default();
+    let report = run_send_pass(
+        &pool,
+        &inputs(
+            &memory,
+            &llm,
+            &policies,
+            &rules,
+            &preflight,
+            Some(&transport),
+            false,
+        ),
+        tuesday_morning(),
+    )
+    .await
+    .unwrap();
+    assert!(report.preflight_modified >= 1);
+    let after = db::sequences::for_contact(&pool, contact.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.max_steps, 2);
+}
+
+#[tokio::test]
+async fn failed_send_burns_the_slot_without_recording_an_engagement() {
     let pool = require_pool!();
     let _sweep = SWEEP_LOCK.lock().await;
     let llm_server = MockServer::start().await;
@@ -407,7 +512,7 @@ async fn failed_send_leaves_the_sequence_unadvanced() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(state.current_step, 0);
+    assert_eq!(state.current_step, 1);
     assert!(
         db::engagements::for_contact(&pool, contact.id, 10)
             .await

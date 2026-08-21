@@ -93,13 +93,13 @@ impl SequenceState {
         }
     }
 
-    pub fn advance(&mut self) {
+    pub fn advance(&mut self, now: DateTime<Utc>) {
         if self.stopped {
             return;
         }
         if self.current_step < self.max_steps {
             self.current_step += 1;
-            self.last_sent_at = Some(Utc::now());
+            self.last_sent_at = Some(now);
         }
         if self.current_step >= self.max_steps {
             self.stop(StopReason::Completed);
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn zero_max_steps_completes_immediately_on_advance() {
         let mut s = SequenceState::start(Uuid::new_v4(), "empty", 0);
-        s.advance();
+        s.advance(Utc::now());
         assert!(!s.is_active());
         assert_eq!(s.stop_reason, Some(StopReason::Completed));
         assert_eq!(s.current_step, 0);
@@ -145,11 +145,11 @@ mod tests {
     fn sequence_advances_then_completes_at_max() {
         let mut s = SequenceState::start(Uuid::new_v4(), "default", 3);
         assert!(s.is_active());
-        s.advance();
-        s.advance();
+        s.advance(Utc::now());
+        s.advance(Utc::now());
         assert!(s.is_active());
         assert_eq!(s.current_step, 2);
-        s.advance();
+        s.advance(Utc::now());
         assert!(!s.is_active());
         assert_eq!(s.stop_reason, Some(StopReason::Completed));
     }
@@ -157,10 +157,10 @@ mod tests {
     #[test]
     fn stopped_sequence_does_not_advance() {
         let mut s = SequenceState::start(Uuid::new_v4(), "default", 3);
-        s.advance();
+        s.advance(Utc::now());
         s.stop(StopReason::Replied);
         let step = s.current_step;
-        s.advance();
+        s.advance(Utc::now());
         assert_eq!(s.current_step, step);
         assert_eq!(s.stop_reason, Some(StopReason::Replied));
     }
@@ -168,11 +168,11 @@ mod tests {
     #[test]
     fn terminal_stop_reason_survives_further_advances() {
         let mut s = SequenceState::start(Uuid::new_v4(), "default", 2);
-        s.advance();
-        s.advance();
+        s.advance(Utc::now());
+        s.advance(Utc::now());
         assert_eq!(s.stop_reason, Some(StopReason::Completed));
         s.stop(StopReason::OptedOut);
-        s.advance();
+        s.advance(Utc::now());
         assert_eq!(s.stop_reason, Some(StopReason::OptedOut));
     }
 

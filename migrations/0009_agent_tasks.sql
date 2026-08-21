@@ -7,6 +7,7 @@ CREATE TABLE agent_tasks (
     status TEXT NOT NULL,
     attempts SMALLINT NOT NULL DEFAULT 0,
     due_at TIMESTAMPTZ,
+    claimed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL
 );
 
