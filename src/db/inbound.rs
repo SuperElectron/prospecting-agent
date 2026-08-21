@@ -32,14 +32,6 @@ pub async fn mark_completed(pool: &PgPool, gmail_message_id: &str) -> Result<(),
     Ok(())
 }
 
-pub async fn release_message(pool: &PgPool, gmail_message_id: &str) -> Result<(), DbError> {
-    sqlx::query("DELETE FROM processed_inbound WHERE gmail_message_id = $1")
-        .bind(gmail_message_id)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 pub async fn attach_contact(pool: &PgPool, gmail_message_id: &str, contact_id: Uuid) -> Result<(), DbError> {
     sqlx::query("UPDATE processed_inbound SET contact_id = $2 WHERE gmail_message_id = $1")
         .bind(gmail_message_id)

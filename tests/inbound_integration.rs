@@ -258,11 +258,6 @@ async fn message_claims_are_exclusive() {
             .unwrap()
             .is_none()
     );
-    db::inbound::release_message(&ctx.pool, &id).await.unwrap();
-    assert_eq!(
-        db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap(),
-        Some(1)
-    );
 }
 
 #[tokio::test]

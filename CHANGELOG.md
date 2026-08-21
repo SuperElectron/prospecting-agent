@@ -18,7 +18,7 @@ The prospecting loop runs itself: a Postgres-backed job queue, twelve scheduled 
 
 ### Changed
 - Contact emails normalize at every boundary; uniqueness moved to lower(email)
-- MEM0_URL alias removed; the memory endpoint is MEMORY_URL
+- BREAKING for existing .env files: MEM0_URL alias removed; the memory endpoint must be set as MEMORY_URL
 
 
 ## v0.3.0 — M3 Workflows (2026-08-21)
