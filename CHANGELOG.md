@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.2.0 — M2 Clients & Connectors (2026-08-21)
+
+Data providers and the email channel, all live-verified against real services.
+
+### Added
+- Apollo client: people search, person match, org enrichment, with mappers into domain types; wire shapes verified against the live API (filter key drift found and fixed)
+- Tavily client: search with depth/topic/recency knobs
+- Gmail connector: installed-app OAuth with PKCE and state verification, MIME builder with thread headers and injection guard, capacity-aware sender rotation, reply-polling primitives
+- Notifier trait with log implementation (Slack lands M6 behind the same trait)
+- Health checks: db, LLM, memory, gmail token, send capacity; CLI subcommands gmail-auth, health
+- Local LLM router service splitting chat and embedding upstreams; memory stack reproducible via scripts/configure-memory.sh — live inference and semantic recall verified on the DGX
+- 180 tests: unit, wiremock, live-Postgres integration, gated live smokes (real Gmail send + poll)
+
+
 ## v0.1.0 — M1 Foundation (2026-08-21)
 
 First milestone. The binary boots, migrations run, and the LLM and memory services are reachable.

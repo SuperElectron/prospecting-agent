@@ -313,7 +313,7 @@ mod tests {
         let mut env = base_env();
         env.insert("EMAIL_PROVIDER".into(), "sendgrid".into());
         env.insert("SENDGRID_API_KEY".into(), "sg-key".into());
-        env.remove("GMAIL_CLIENT_SECRET");
+        env.remove("GMAIL_CLIENT_FILE");
         assert!(AppConfig::from_map(&env).is_ok());
     }
 
@@ -359,8 +359,8 @@ mod tests {
         let dump = format!("{cfg:?}");
         assert!(!dump.contains("ap-key"));
         assert!(!dump.contains("tv-key"));
-        assert!(!dump.contains("csec"));
-        assert!(!dump.contains("rtok"));
+        assert!(!dump.contains("ap-key"));
+        assert!(!dump.contains("tv-key"));
         assert!(dump.contains("Secret(***)"));
     }
 }

@@ -21,13 +21,20 @@ An open-source AI prospecting agent that finds leads, researches them, and runs 
 | [SendGrid](https://sendgrid.com) | Email sending (alternative to Gmail) | One email provider |
 | [HubSpot](https://hubspot.com) | CRM sync + engagement logging | Optional (CSV works without) |
 | CSV import | No-CRM contact source | Optional |
-| Slack | Rep notifications, digests, error alerts | Optional |
+| Slack | Rep notifications, digests, error alerts | Planned (M6) |
 | [HeyReach](https://heyreach.io) | LinkedIn outreach | Optional (off by default) |
 
 ## Docs
 
 - Read the [wiki](https://github.com/SuperElectron/prospecting-agent/wiki) for details. 
-- Setup guides in `docs/`.
+- Run `./scripts/setup.sh` on a fresh clone.
+
+## Usage
+
+```sh
+prospecting-agent gmail-auth   # authorize a sending account (browser consent)
+prospecting-agent health      # probe db, LLM, memory, gmail, capacity
+```
 - Read [settings.example.json](.claude/settings.example.json) for how to plug in your API keys.
 
 ## License
