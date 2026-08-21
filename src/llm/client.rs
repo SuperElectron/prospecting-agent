@@ -3,6 +3,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::config::env::LlmConfig;
+use crate::config::secret::Secret;
 
 const MAX_ATTEMPTS: u32 = 3;
 const REQUEST_TIMEOUT_SECS: u64 = 120;
@@ -67,14 +68,14 @@ struct Choice {
 
 #[derive(Deserialize)]
 struct ChoiceMessage {
-    content: String,
+    content: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct LlmClient {
     http: reqwest::Client,
     base_url: String,
-    api_key: String,
+    api_key: Secret,
     model: String,
 }
 
@@ -83,13 +84,22 @@ impl LlmClient {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
             .build()
-            .unwrap_or_default();
+            .expect("static reqwest client configuration is valid");
         Self {
             http,
             base_url: config.base_url.trim_end_matches('/').to_string(),
-            api_key: config.api_key.expose().to_string(),
+            api_key: config.api_key.clone(),
             model: config.model.clone(),
         }
+    }
+
+    pub async fn chat_structured<T>(&self, mut messages: Vec<ChatMessage>) -> Result<T, LlmError>
+    where
+        T: schemars::JsonSchema + serde::de::DeserializeOwned,
+    {
+        messages.push(ChatMessage::system(crate::llm::schemas::schema_instruction::<T>()));
+        let raw = self.chat(&messages).await?;
+        crate::llm::output::parse_structured(&raw)
     }
 
     pub async fn chat(&self, messages: &[ChatMessage]) -> Result<String, LlmError> {
@@ -107,7 +117,7 @@ impl LlmClient {
             let response = self
                 .http
                 .post(&url)
-                .bearer_auth(&self.api_key)
+                .bearer_auth(self.api_key.expose())
                 .json(&request)
                 .send()
                 .await;
@@ -118,14 +128,14 @@ impl LlmClient {
                         .choices
                         .into_iter()
                         .next()
-                        .map(|c| c.message.content)
+                        .and_then(|c| c.message.content)
                         .ok_or(LlmError::EmptyResponse);
                 }
                 Ok(resp) => {
                     let status = resp.status().as_u16();
                     let body = resp.text().await.unwrap_or_default();
                     let error = LlmError::Status { status, body };
-                    if (500..600).contains(&status) {
+                    if status == 429 || (500..600).contains(&status) {
                         last_error = Some(error);
                     } else {
                         return Err(error);
@@ -177,16 +187,71 @@ mod tests {
             .and(path("/v1/chat/completions"))
             .respond_with(ResponseTemplate::new(500))
             .up_to_n_times(2)
+            .expect(2)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_json(completion("recovered")))
+            .expect(1)
             .mount(&server)
             .await;
         let client = LlmClient::new(&config(format!("{}/v1", server.uri())));
         let out = client.chat(&[ChatMessage::user("hi")]).await.unwrap();
         assert_eq!(out, "recovered");
+    }
+
+    #[tokio::test]
+    async fn null_content_maps_to_empty_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"choices": [{"message": {"role": "assistant", "content": null}}]}),
+            ))
+            .mount(&server)
+            .await;
+        let client = LlmClient::new(&config(format!("{}/v1", server.uri())));
+        let err = client.chat(&[ChatMessage::user("hi")]).await.unwrap_err();
+        assert!(matches!(err, LlmError::EmptyResponse));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_is_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(completion("after limit")))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = LlmClient::new(&config(format!("{}/v1", server.uri())));
+        let out = client.chat(&[ChatMessage::user("hi")]).await.unwrap();
+        assert_eq!(out, "after limit");
+    }
+
+    #[tokio::test]
+    async fn chat_structured_appends_schema_and_parses() {
+        let server = MockServer::start().await;
+        let body = "```json\n{\"subject\": \"s\", \"body\": \"b\", \"personalization_fact\": \"f\"}\n```";
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(completion(body)))
+            .mount(&server)
+            .await;
+        let client = LlmClient::new(&config(format!("{}/v1", server.uri())));
+        let email: crate::llm::schemas::OutreachEmail = client
+            .chat_structured(vec![ChatMessage::user("write it")])
+            .await
+            .unwrap();
+        assert_eq!(email.subject, "s");
     }
 
     #[tokio::test]

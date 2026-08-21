@@ -4,10 +4,9 @@ use crate::llm::client::LlmError;
 
 pub fn extract_json(raw: &str) -> Option<&str> {
     let trimmed = raw.trim();
-    if let Some(fenced) = extract_fenced(trimmed) {
-        return balanced_json(fenced);
-    }
-    balanced_json(trimmed)
+    extract_fenced(trimmed)
+        .and_then(balanced_json)
+        .or_else(|| balanced_json(trimmed))
 }
 
 fn extract_fenced(raw: &str) -> Option<&str> {
@@ -20,7 +19,18 @@ fn extract_fenced(raw: &str) -> Option<&str> {
 }
 
 fn balanced_json(raw: &str) -> Option<&str> {
-    let open = raw.find(['{', '['])?;
+    let mut search_from = 0;
+    while let Some(rel) = raw[search_from..].find(['{', '[']) {
+        let open = search_from + rel;
+        if let Some(found) = balanced_json_at(raw, open) {
+            return Some(found);
+        }
+        search_from = open + 1;
+    }
+    None
+}
+
+fn balanced_json_at(raw: &str, open: usize) -> Option<&str> {
     let opener = raw.as_bytes()[open];
     let closer = if opener == b'{' { b'}' } else { b']' };
     let mut depth = 0usize;
@@ -101,6 +111,20 @@ mod tests {
         let raw = "list: [1, 2, 3] done";
         let v: Vec<u8> = parse_structured(raw).unwrap();
         assert_eq!(v, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn json_after_a_non_json_fence_is_still_found() {
+        let raw = "```\nnot json\n```\n{\"subject\": \"x\", \"score\": 2}";
+        let s: Sample = parse_structured(raw).unwrap();
+        assert_eq!(s.score, 2);
+    }
+
+    #[test]
+    fn unbalanced_prose_brace_before_real_json_is_skipped() {
+        let raw = "the format is { key: value ... anyway: {\"subject\": \"y\", \"score\": 4}";
+        let s: Sample = parse_structured(raw).unwrap();
+        assert_eq!(s.score, 4);
     }
 
     #[test]

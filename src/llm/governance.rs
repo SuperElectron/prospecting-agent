@@ -13,7 +13,14 @@ pub struct Policy {
 impl Policy {
     pub fn matches(&self, text: &str) -> bool {
         let lower = text.to_lowercase();
-        self.trigger_keywords.iter().any(|k| lower.contains(k.as_str()))
+        let words: Vec<&str> = lower
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .collect();
+        self.trigger_keywords.iter().any(|k| {
+            let keyword = k.to_lowercase();
+            words.iter().any(|w| w.starts_with(keyword.as_str()))
+        })
     }
 }
 
@@ -127,5 +134,22 @@ mod tests {
     fn matching_is_case_insensitive() {
         let policies = defaults();
         assert!(!select(&policies, "FUNDING news detected").is_empty());
+    }
+
+    #[test]
+    fn embedded_substrings_do_not_trigger() {
+        let policies = defaults();
+        assert!(select(&policies, "What is the benefit of their profit margins?").is_empty());
+        assert!(select(&policies, "Describe the company milestones").is_empty());
+    }
+
+    #[test]
+    fn stem_keywords_still_match_word_prefixes() {
+        let policies = defaults();
+        let slugs: Vec<&str> = select(&policies, "How do we qualify this account?")
+            .iter()
+            .map(|p| p.slug.as_str())
+            .collect();
+        assert!(slugs.contains(&"icp"));
     }
 }

@@ -35,7 +35,7 @@ impl StepPlan {
         }
         for (i, answer) in prior_answers.iter().enumerate() {
             if let Some(instruction) = self.steps.get(i) {
-                messages.push(ChatMessage::user(instruction.clone()));
+                messages.push(ChatMessage::user(inject(policies, instruction)));
             }
             messages.push(ChatMessage::assistant(answer.clone()));
         }
