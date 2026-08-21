@@ -1,0 +1,6 @@
+{
+  "$comment": "Copy to .claude/settings.local.json (gitignored). Only Claude-session values live here; app runtime config belongs in .env (see .env.example).",
+  "env": {
+    "GITHUB_TOKEN": "<github-pat>"
+  }
+}

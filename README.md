@@ -1,13 +1,35 @@
 # Prospecting Agent
 
-An open-source AI prospecting agent that finds leads, researches them, and runs personalized multi-channel outreach — email, LinkedIn, and phone — on autopilot.
+An open-source AI prospecting agent that finds leads, researches them, and runs personalized multi-channel outreach on autopilot. 
+- One Rust binary + Postgres + Mem0
+- Everything runs locally, deployable anywhere.
+- Bring your own CRM (HubSpot or plain CSV) and your own API keys. 
+- All LLM work runs against a local OpenAI-compatible endpoint.
 
-Built with TypeScript and Trigger.dev. Bring your own CRM (HubSpot, Salesforce, or plain CSV) and your own API keys.
+**Built with a DGX Spark running gpt-oss-120B.**
 
-## Status
+## Integrations
 
-Early development — not ready for production use yet.
+| Integration | Role | Required |
+|---|---|---|
+| [Apollo](https://apollo.io) | Contact and company discovery + enrichment | Yes |
+| [Tavily](https://tavily.com) | Web research and buying-signal detection | Yes |
+| Local LLM (OpenAI-compatible) | All generation and analysis (e.g. gpt-oss-120B) | Yes |
+| [Mem0](https://mem0.ai) (self-hosted) | Semantic memory over research and interactions | Yes (bundled in compose) |
+| Postgres | System of record + job queues | Yes (bundled in compose) |
+| Gmail | Email sending + reply monitoring | One email provider |
+| [SendGrid](https://sendgrid.com) | Email sending (alternative to Gmail) | One email provider |
+| [HubSpot](https://hubspot.com) | CRM sync + engagement logging | Optional (CSV works without) |
+| CSV import | No-CRM contact source | Optional |
+| Slack | Rep notifications, digests, error alerts | Optional |
+| [HeyReach](https://heyreach.io) | LinkedIn outreach | Optional (off by default) |
+
+## Docs
+
+- Read the [wiki](https://github.com/SuperElectron/prospecting-agent/wiki) for details. 
+- Setup guides in `docs/`.
+- Read [settings.example.json](.claude/settings.example.json) for how to plug in your API keys.
 
 ## License
 
-MIT
+MIT: [LICENSE](LICENSE).
