@@ -254,3 +254,41 @@ async fn token_exchange_failure_surfaces_as_auth_chain() {
         .unwrap_err();
     assert!(matches!(err, ConnectorError::Status { status: 400, .. }));
 }
+
+#[tokio::test]
+async fn live_gmail_self_send_and_poll_smoke() {
+    if std::env::var("TEST_GMAIL_LIVE").is_err() {
+        eprintln!("TEST_GMAIL_LIVE not set; skipping live gmail smoke");
+        return;
+    }
+    let pool = require_pool!();
+    let client_file = std::env::var("GMAIL_CLIENT_FILE")
+        .unwrap_or_else(|_| ".claude/secrets/gmail-oauth-client.json".into());
+    let senders_file =
+        std::env::var("GMAIL_SENDERS_FILE").unwrap_or_else(|_| ".claude/secrets/gmail-senders.json".into());
+    let oauth = prospecting_agent::connectors::gmail::OauthClient::from_file(&client_file).unwrap();
+    let senders = prospecting_agent::connectors::gmail::load_senders(&senders_file).unwrap();
+    assert!(!senders.is_empty(), "run cli gmail-auth first");
+    let self_address = senders[0].email.clone();
+    let connector = GmailConnector::new(oauth, senders, pool);
+    let receipt = connector
+        .send(&OutboundEmail::new(
+            &self_address,
+            "prospecting-agent live smoke",
+            "self-addressed smoke test from the gmail connector",
+        ))
+        .await
+        .unwrap();
+    assert!(!receipt.message_id.is_empty());
+    let refs = connector
+        .list_messages(
+            &self_address,
+            "newer_than:1d subject:(prospecting-agent live smoke)",
+            5,
+        )
+        .await
+        .unwrap();
+    assert!(!refs.is_empty());
+    let message = connector.fetch_message(&self_address, &refs[0].id).await.unwrap();
+    assert_eq!(message.thread_id, receipt.thread_id);
+}
