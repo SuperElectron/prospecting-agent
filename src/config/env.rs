@@ -59,10 +59,9 @@ pub enum EmailProvider {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GmailConfig {
-    pub client_id: String,
-    pub client_secret: Secret,
-    pub refresh_token: Secret,
-    pub senders: Vec<String>,
+    pub client_file: String,
+    pub senders_file: String,
+    pub auth_port: u16,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -145,42 +144,21 @@ impl EmailConfig {
 }
 
 fn gmail_from_map(env: &EnvMap, is_selected: bool) -> Result<Option<GmailConfig>, ConfigError> {
-    let Some(client_id) = optional(env, "GMAIL_CLIENT_ID") else {
-        if is_selected {
-            return Err(ConfigError::ProviderCredentials {
-                provider: "gmail",
-                missing: "GMAIL_CLIENT_ID",
-            });
-        }
+    let client_file = optional(env, "GMAIL_CLIENT_FILE");
+    if client_file.is_none() && !is_selected {
         return Ok(None);
-    };
-    let config = GmailConfig {
-        client_id,
-        client_secret: get_or(env, "GMAIL_CLIENT_SECRET", "").into(),
-        refresh_token: get_or(env, "GMAIL_REFRESH_TOKEN", "").into(),
-        senders: split_csv(&get_or(env, "GMAIL_SENDERS", "")),
-    };
-    if is_selected {
-        if config.client_secret.is_empty() {
-            return Err(ConfigError::ProviderCredentials {
-                provider: "gmail",
-                missing: "GMAIL_CLIENT_SECRET",
-            });
-        }
-        if config.refresh_token.is_empty() {
-            return Err(ConfigError::ProviderCredentials {
-                provider: "gmail",
-                missing: "GMAIL_REFRESH_TOKEN",
-            });
-        }
-        if config.senders.is_empty() {
-            return Err(ConfigError::ProviderCredentials {
-                provider: "gmail",
-                missing: "GMAIL_SENDERS",
-            });
-        }
     }
-    Ok(Some(config))
+    let auth_port = get_or(env, "GMAIL_AUTH_PORT", "3847")
+        .parse()
+        .map_err(|_| ConfigError::Invalid {
+            key: "GMAIL_AUTH_PORT",
+            reason: "must be a port number".into(),
+        })?;
+    Ok(Some(GmailConfig {
+        client_file: client_file.unwrap_or_else(|| ".claude/secrets/gmail-oauth-client.json".into()),
+        senders_file: get_or(env, "GMAIL_SENDERS_FILE", ".claude/secrets/gmail-senders.json"),
+        auth_port,
+    }))
 }
 
 fn linkedin_from_map(env: &EnvMap) -> Result<Option<LinkedinConfig>, ConfigError> {
@@ -233,14 +211,6 @@ fn parse_u16(env: &EnvMap, key: &'static str, default: u16) -> Result<u16, Confi
     }
 }
 
-fn split_csv(raw: &str) -> Vec<String> {
-    raw.split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToString::to_string)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,10 +223,6 @@ mod tests {
             ("MEMORY_URL", "http://localhost:8765"),
             ("APOLLO_API_KEY", "ap-key"),
             ("TAVILY_API_KEY", "tv-key"),
-            ("GMAIL_CLIENT_ID", "cid"),
-            ("GMAIL_CLIENT_SECRET", "csec"),
-            ("GMAIL_REFRESH_TOKEN", "rtok"),
-            ("GMAIL_SENDERS", "a@x.io, b@x.io"),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -269,7 +235,10 @@ mod tests {
         assert_eq!(cfg.email.provider, EmailProvider::Gmail);
         assert!(cfg.dry_run);
         assert_eq!(cfg.llm.api_key.expose(), "local");
-        assert_eq!(cfg.email.gmail.unwrap().senders, vec!["a@x.io", "b@x.io"]);
+        let gmail = cfg.email.gmail.unwrap();
+        assert_eq!(gmail.client_file, ".claude/secrets/gmail-oauth-client.json");
+        assert_eq!(gmail.senders_file, ".claude/secrets/gmail-senders.json");
+        assert_eq!(gmail.auth_port, 3847);
         assert!(cfg.linkedin.is_none());
         assert!(cfg.hubspot.is_none());
     }
@@ -295,19 +264,28 @@ mod tests {
     }
 
     #[test]
-    fn gmail_provider_requires_every_credential() {
-        for missing in ["GMAIL_CLIENT_SECRET", "GMAIL_REFRESH_TOKEN", "GMAIL_SENDERS"] {
-            let mut env = base_env();
-            env.remove(missing);
-            let err = AppConfig::from_map(&env).unwrap_err();
-            assert_eq!(
-                err,
-                ConfigError::ProviderCredentials {
-                    provider: "gmail",
-                    missing
-                }
-            );
-        }
+    fn gmail_file_paths_and_port_are_overridable() {
+        let mut env = base_env();
+        env.insert("GMAIL_CLIENT_FILE".into(), "/tmp/client.json".into());
+        env.insert("GMAIL_SENDERS_FILE".into(), "/tmp/senders.json".into());
+        env.insert("GMAIL_AUTH_PORT".into(), "4000".into());
+        let gmail = AppConfig::from_map(&env).unwrap().email.gmail.unwrap();
+        assert_eq!(gmail.client_file, "/tmp/client.json");
+        assert_eq!(gmail.senders_file, "/tmp/senders.json");
+        assert_eq!(gmail.auth_port, 4000);
+    }
+
+    #[test]
+    fn bad_gmail_auth_port_is_rejected() {
+        let mut env = base_env();
+        env.insert("GMAIL_AUTH_PORT".into(), "not-a-port".into());
+        assert!(matches!(
+            AppConfig::from_map(&env).unwrap_err(),
+            ConfigError::Invalid {
+                key: "GMAIL_AUTH_PORT",
+                ..
+            }
+        ));
     }
 
     #[test]
