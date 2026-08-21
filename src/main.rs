@@ -107,3 +107,14 @@ fn gmail_config() -> Result<prospecting_agent::config::GmailConfig, String> {
         .gmail
         .ok_or_else(|| "gmail is not the configured email provider".into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn clap_definition_is_internally_consistent() {
+        Args::command().debug_assert();
+    }
+}

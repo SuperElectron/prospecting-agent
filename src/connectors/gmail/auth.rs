@@ -52,6 +52,14 @@ impl std::fmt::Debug for SenderAccount {
 struct TokenResponse {
     access_token: Option<String>,
     refresh_token: Option<String>,
+    #[serde(default)]
+    expires_in: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccessToken {
+    pub token: String,
+    pub expires_in_secs: u64,
 }
 
 impl OauthClient {
@@ -134,6 +142,14 @@ impl OauthClient {
         http: &reqwest::Client,
         refresh_token: &str,
     ) -> Result<String, ConnectorError> {
+        Ok(self.access_token_with_expiry(http, refresh_token).await?.token)
+    }
+
+    pub async fn access_token_with_expiry(
+        &self,
+        http: &reqwest::Client,
+        refresh_token: &str,
+    ) -> Result<AccessToken, ConnectorError> {
         let form = [
             ("client_id", self.client_id.as_str()),
             ("client_secret", self.client_secret.expose()),
@@ -141,9 +157,13 @@ impl OauthClient {
             ("grant_type", "refresh_token"),
         ];
         let parsed = self.token_request(http, &form).await?;
-        parsed
+        let token = parsed
             .access_token
-            .ok_or_else(|| ConnectorError::Auth("token response carried no access_token".into()))
+            .ok_or_else(|| ConnectorError::Auth("token response carried no access_token".into()))?;
+        Ok(AccessToken {
+            token,
+            expires_in_secs: parsed.expires_in.unwrap_or(3600),
+        })
     }
 
     async fn token_request(
@@ -156,6 +176,11 @@ impl OauthClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
+            if (status == 400 || status == 401)
+                && (body.contains("invalid_grant") || body.contains("invalid_client"))
+            {
+                return Err(ConnectorError::Auth(format!("refresh token rejected: {body}")));
+            }
             return Err(ConnectorError::Status { status, body });
         }
         let raw = resp.text().await?;
@@ -326,7 +351,7 @@ mod tests {
             .mount(&bad)
             .await;
         let err = client(&bad).access_token(&http, "revoked").await.unwrap_err();
-        assert!(matches!(err, ConnectorError::Status { status: 400, .. }));
+        assert!(matches!(err, ConnectorError::Auth(_)));
     }
 
     #[test]

@@ -279,7 +279,7 @@ async fn token_exchange_failure_surfaces_as_auth_chain() {
         .send(&OutboundEmail::new("jane@acme.io", "s", "b"))
         .await
         .unwrap_err();
-    assert!(matches!(err, ConnectorError::Status { status: 400, .. }));
+    assert!(matches!(err, ConnectorError::Auth(_)));
 }
 
 #[tokio::test]
@@ -323,4 +323,81 @@ async fn live_gmail_self_send_and_poll_smoke() {
         .await
         .unwrap();
     assert_eq!(message.thread_id, receipt.thread_id);
+}
+
+#[tokio::test]
+async fn empty_sender_list_is_a_typed_no_senders_error() {
+    let pool = require_pool!();
+    let server = MockServer::start().await;
+    let connector = GmailConnector::new(oauth(&server), Vec::new(), pool).with_api_base(&server.uri());
+    let err = connector
+        .send(&OutboundEmail::new("jane@acme.io", "s", "b"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ConnectorError::NoSenders));
+}
+
+#[tokio::test]
+async fn revoked_refresh_token_is_a_typed_auth_error() {
+    let pool = require_pool!();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_string(r#"{"error":"invalid_grant"}"#))
+        .mount(&server)
+        .await;
+    let connector = GmailConnector::new(oauth(&server), vec![sender(&unique_sender("revoked"), 5)], pool)
+        .with_api_base(&server.uri());
+    let err = connector
+        .send(&OutboundEmail::new("jane@acme.io", "s", "b"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ConnectorError::Auth(_)));
+}
+
+#[tokio::test]
+async fn access_tokens_are_cached_across_calls() {
+    let pool = require_pool!();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"access_token": "at-1", "expires_in": 3599})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_send(&server).await;
+    let account = sender(&unique_sender("cache"), 5);
+    let connector =
+        GmailConnector::new(oauth(&server), vec![account.clone()], pool).with_api_base(&server.uri());
+    let email = OutboundEmail::new("jane@acme.io", "s", "b");
+    connector.send(&email).await.unwrap();
+    connector.send(&email).await.unwrap();
+}
+
+#[tokio::test]
+async fn page_token_round_trips_to_the_wire() {
+    let pool = require_pool!();
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages"))
+        .and(wiremock::matchers::query_param("pageToken", "tok-2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "messages": [{"id": "in-2", "threadId": "t-2"}],
+            "nextPageToken": "tok-3",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let account = sender(&unique_sender("page"), 5);
+    let connector =
+        GmailConnector::new(oauth(&server), vec![account.clone()], pool).with_api_base(&server.uri());
+    let page = connector
+        .list_messages(&account.email, "in:inbox", 10, Some("tok-2"))
+        .await
+        .unwrap();
+    assert_eq!(page.next_page_token.as_deref(), Some("tok-3"));
 }
