@@ -271,13 +271,13 @@ async fn send_pass_outside_the_window_sends_nothing() {
     )
     .await
     .unwrap();
-    assert!(
+    assert_eq!(
         db::sequences::for_contact(&pool, contact.id)
             .await
             .unwrap()
             .unwrap()
-            .current_step
-            == 0
+            .current_step,
+        0
     );
     assert!(
         !transport
