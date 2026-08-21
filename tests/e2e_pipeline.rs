@@ -10,6 +10,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 struct Rig {
     ctx: JobContext,
+    seed_dir: std::path::PathBuf,
     apollo: MockServer,
     tavily: MockServer,
     llm: MockServer,
@@ -17,6 +18,17 @@ struct Rig {
     gmail: MockServer,
     domain: String,
     email: String,
+}
+
+async fn cross_process_sweep_lock() -> sqlx::PgConnection {
+    use sqlx::Connection;
+    let url = std::env::var("TEST_DATABASE_URL").expect("guard runs only with a test database");
+    let mut conn = sqlx::PgConnection::connect(&url).await.expect("lock connection");
+    sqlx::query("SELECT pg_advisory_lock(73461122)")
+        .execute(&mut conn)
+        .await
+        .expect("advisory lock");
+    conn
 }
 
 fn completion_with(content: &serde_json::Value) -> serde_json::Value {
@@ -64,6 +76,7 @@ async fn mount_baseline(memory: &MockServer, gmail: &MockServer) {
             ResponseTemplate::new(200)
                 .set_body_json(serde_json::json!({"access_token": "at-1", "expires_in": 3599})),
         )
+        .expect(1..)
         .mount(gmail)
         .await;
 }
@@ -138,6 +151,7 @@ async fn rig() -> Option<Rig> {
 
     Some(Rig {
         ctx,
+        seed_dir: dir,
         apollo,
         tavily,
         llm,
@@ -165,6 +179,7 @@ async fn stage_enrich(rig: &Rig) {
                         "organization": {"id": "o-1", "primary_domain": domain,
                                           "estimated_num_employees": 120}},
         })))
+        .with_priority(1)
         .mount(apollo)
         .await;
     Mock::given(method("POST"))
@@ -187,7 +202,7 @@ async fn stage_send(rig: &Rig) {
     } = rig;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .and(body_string_contains("outreach"))
+        .and(body_string_contains("personalization_fact"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
                 "subject": "Scaling the AE ramp",
@@ -220,6 +235,21 @@ async fn stage_send(rig: &Rig) {
     };
     let send = run_send_pass(&ctx.pool, &inputs, tuesday).await.unwrap();
     assert!(send.sent >= 1);
+    let sent_request = gmail
+        .received_requests()
+        .await
+        .expect("request recording enabled")
+        .into_iter()
+        .find(|request| request.url.path().ends_with("/messages/send"))
+        .expect("a send request reached the gmail mock");
+    let payload: serde_json::Value = serde_json::from_slice(&sent_request.body).unwrap();
+    let raw = payload["raw"].as_str().expect("send payload carries raw MIME");
+    let mime = String::from_utf8(
+        base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, raw).unwrap(),
+    )
+    .unwrap();
+    assert!(mime.contains(&format!("To: {email}")), "mime: {mime}");
+    assert!(mime.contains("Subject: "), "mime: {mime}");
     let contact = db::contacts::by_email(&ctx.pool, email).await.unwrap().unwrap();
     let state = db::sequences::for_contact(&ctx.pool, contact.id)
         .await
@@ -287,6 +317,7 @@ async fn stage_reply(rig: &Rig) {
 #[tokio::test]
 async fn full_funnel_from_csv_to_reply_and_report() {
     let Some(rig) = rig().await else { return };
+    let _sweep = cross_process_sweep_lock().await;
     let ctx = &rig.ctx;
 
     let sync = run_job(ctx, JobKind::CsvSync).await.unwrap();
@@ -338,4 +369,6 @@ async fn full_funnel_from_csv_to_reply_and_report() {
     assert!(report["emails_sent"].as_i64().unwrap() >= 1);
     assert!(report["replies"].as_i64().unwrap() >= 1);
     assert!(report["contacts_added"].as_i64().unwrap() >= 1);
+
+    std::fs::remove_dir_all(&rig.seed_dir).ok();
 }
