@@ -1,3 +1,6 @@
+use crate::config::outreach::PreflightConfig;
+use crate::config::targeting::{DiscoveryBudget, IcpCriteria};
+use crate::domain::Seniority;
 use std::collections::HashMap;
 
 use super::secret::Secret;
@@ -29,6 +32,10 @@ pub struct AppConfig {
     pub log_level: String,
     pub dry_run: bool,
     pub csv_data_dir: String,
+    pub targeting: IcpCriteria,
+    pub discovery: DiscoveryBudget,
+    pub preflight: PreflightConfig,
+    pub apollo_daily_credit_cap: u16,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -112,6 +119,19 @@ impl AppConfig {
             log_level: get_or(env, "LOG_LEVEL", "info"),
             dry_run: parse_bool(env, "DRY_RUN", true)?,
             csv_data_dir: get_or(env, "CSV_DATA_DIR", "./data"),
+            targeting: targeting_from_map(env)?,
+            discovery: DiscoveryBudget {
+                contacts_per_account: parse_number(env, "DISCOVERY_CONTACTS_PER_ACCOUNT", 3)?,
+                max_credits_per_run: parse_number(env, "DISCOVERY_CREDITS_PER_RUN", 15)?,
+            },
+            preflight: PreflightConfig {
+                carpet_bomb_window_days: parse_number(env, "CARPET_BOMB_WINDOW_DAYS", 7)?,
+                max_contacts_per_window: parse_number(env, "MAX_CONTACTS_PER_WINDOW", 2)?,
+                negative_event_delay_days: parse_number(env, "NEGATIVE_EVENT_DELAY_DAYS", 21)?,
+                warm_intro_cadence: get_or(env, "WARM_INTRO_CADENCE", "warm-intro"),
+                warm_intro_max_emails: parse_number(env, "WARM_INTRO_MAX_EMAILS", 2)?,
+            },
+            apollo_daily_credit_cap: parse_number(env, "APOLLO_DAILY_CREDIT_CAP", 50)?,
         })
     }
 }
@@ -174,6 +194,51 @@ fn linkedin_from_map(env: &EnvMap) -> Result<Option<LinkedinConfig>, ConfigError
     }))
 }
 
+fn targeting_from_map(env: &EnvMap) -> Result<IcpCriteria, ConfigError> {
+    let mut criteria = IcpCriteria::default();
+    if let Some(titles) = optional(env, "TARGET_TITLES") {
+        let parsed: Vec<String> = titles
+            .split(',')
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .map(str::to_string)
+            .collect();
+        if parsed.is_empty() {
+            return Err(ConfigError::Invalid {
+                key: "TARGET_TITLES",
+                reason: "no titles after parsing".into(),
+            });
+        }
+        criteria.target_titles = parsed;
+    }
+    if let Some(raw) = optional(env, "MIN_SENIORITY") {
+        criteria.min_seniority = serde_json::from_value::<Seniority>(serde_json::Value::String(raw.clone()))
+            .map_err(|_| ConfigError::Invalid {
+                key: "MIN_SENIORITY",
+                reason: format!("unknown seniority {raw}"),
+            })?;
+    }
+    if let Some(domains) = optional(env, "DISQUALIFIED_DOMAINS") {
+        criteria.disqualified_domains = domains
+            .split(',')
+            .map(str::trim)
+            .filter(|domain| !domain.is_empty())
+            .map(crate::domain::normalize_domain)
+            .collect();
+    }
+    Ok(criteria)
+}
+
+fn parse_number<T: std::str::FromStr>(env: &EnvMap, key: &'static str, default: T) -> Result<T, ConfigError> {
+    match optional(env, key) {
+        Some(raw) => raw.trim().parse().map_err(|_| ConfigError::Invalid {
+            key,
+            reason: format!("cannot parse {raw} as a number"),
+        }),
+        None => Ok(default),
+    }
+}
+
 fn required(env: &EnvMap, key: &'static str) -> Result<String, ConfigError> {
     optional(env, key).ok_or(ConfigError::Missing(key))
 }
@@ -228,6 +293,46 @@ mod tests {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect()
+    }
+
+    #[test]
+    fn targeting_and_spend_parse_with_overrides_and_defaults() {
+        let mut env = base_env();
+        let cfg = AppConfig::from_map(&env).unwrap();
+        assert_eq!(cfg.targeting, IcpCriteria::default());
+        assert_eq!(cfg.discovery, DiscoveryBudget::default());
+        assert_eq!(cfg.preflight, PreflightConfig::default());
+        assert_eq!(cfg.apollo_daily_credit_cap, 50);
+
+        env.insert("TARGET_TITLES".into(), " CTO , VP Engineering ".into());
+        env.insert("MIN_SENIORITY".into(), "vp".into());
+        env.insert("DISQUALIFIED_DOMAINS".into(), "WWW.Bad.com, rival.io".into());
+        env.insert("DISCOVERY_CREDITS_PER_RUN".into(), "5".into());
+        env.insert("APOLLO_DAILY_CREDIT_CAP".into(), "20".into());
+        let cfg = AppConfig::from_map(&env).unwrap();
+        assert_eq!(cfg.targeting.target_titles, vec!["CTO", "VP Engineering"]);
+        assert_eq!(cfg.targeting.min_seniority, Seniority::Vp);
+        assert_eq!(cfg.targeting.disqualified_domains, vec!["bad.com", "rival.io"]);
+        assert_eq!(cfg.discovery.max_credits_per_run, 5);
+        assert_eq!(cfg.apollo_daily_credit_cap, 20);
+
+        env.insert("MIN_SENIORITY".into(), "boss".into());
+        assert!(matches!(
+            AppConfig::from_map(&env),
+            Err(ConfigError::Invalid {
+                key: "MIN_SENIORITY",
+                ..
+            })
+        ));
+        env.insert("MIN_SENIORITY".into(), "vp".into());
+        env.insert("TARGET_TITLES".into(), " , ".into());
+        assert!(matches!(
+            AppConfig::from_map(&env),
+            Err(ConfigError::Invalid {
+                key: "TARGET_TITLES",
+                ..
+            })
+        ));
     }
 
     #[test]

@@ -1,7 +1,8 @@
 pub mod preflight;
 pub mod strategy;
 
-pub use preflight::{PreflightConfig, PreflightDecision, preflight};
+pub use crate::config::PreflightConfig;
+pub use preflight::{PreflightDecision, preflight};
 pub use strategy::evaluate_account_strategy;
 
 #[derive(Debug, thiserror::Error)]

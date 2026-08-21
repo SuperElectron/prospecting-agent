@@ -51,7 +51,8 @@ pub struct TaskRunReport {
 
 pub async fn execute_due(ctx: &JobContext) -> Result<TaskRunReport, crate::jobs::JobError> {
     let mut report = TaskRunReport::default();
-    let mut credits = TASK_CREDITS;
+    let granted = crate::jobs::reserve_apollo_credits(ctx, TASK_CREDITS).await?;
+    let mut credits = granted;
     let tasks = db::tasks::claim_due(&ctx.pool, Utc::now(), CLAIM_LIMIT).await?;
     for task in tasks {
         report.claimed += 1;
@@ -89,6 +90,7 @@ pub async fn execute_due(ctx: &JobContext) -> Result<TaskRunReport, crate::jobs:
             report.bookkeeping_failed += 1;
         }
     }
+    crate::jobs::settle_apollo_credits(ctx, granted, credits).await?;
     Ok(report)
 }
 

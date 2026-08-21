@@ -481,3 +481,15 @@ async fn email_dedupe_migration_collapses_multiple_loser_sequence_states() {
 
     tx.rollback().await.unwrap();
 }
+
+#[tokio::test]
+async fn apollo_ledger_accumulates_per_day() {
+    let pool = require_pool!();
+    let day = chrono::NaiveDate::from_ymd_opt(1999, 1, 1).unwrap();
+    let before = db::apollo_ledger::spent_on(&pool, day).await.unwrap();
+    db::apollo_ledger::record_spend(&pool, day, 3).await.unwrap();
+    db::apollo_ledger::record_spend(&pool, day, 2).await.unwrap();
+    db::apollo_ledger::record_spend(&pool, day, 0).await.unwrap();
+    let after = db::apollo_ledger::spent_on(&pool, day).await.unwrap();
+    assert_eq!(after, before + 5);
+}
