@@ -1,20 +1,19 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use tracing_subscriber::EnvFilter;
 
 pub fn init_tracing(default_level: &str) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
-    tracing_subscriber::fmt()
+    let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(true)
-        .init();
+        .try_init();
 }
 
 #[derive(Default)]
 pub struct Counters {
-    inner: Mutex<HashMap<&'static str, AtomicU64>>,
+    inner: Mutex<HashMap<&'static str, u64>>,
 }
 
 impl Counters {
@@ -28,19 +27,16 @@ impl Counters {
 
     pub fn add(&self, name: &'static str, amount: u64) {
         let mut map = self.inner.lock().expect("counters lock poisoned");
-        map.entry(name)
-            .or_insert_with(|| AtomicU64::new(0))
-            .fetch_add(amount, Ordering::Relaxed);
+        *map.entry(name).or_insert(0) += amount;
     }
 
     pub fn get(&self, name: &'static str) -> u64 {
         let map = self.inner.lock().expect("counters lock poisoned");
-        map.get(name).map_or(0, |c| c.load(Ordering::Relaxed))
+        map.get(name).copied().unwrap_or(0)
     }
 
     pub fn snapshot(&self) -> HashMap<&'static str, u64> {
-        let map = self.inner.lock().expect("counters lock poisoned");
-        map.iter().map(|(k, v)| (*k, v.load(Ordering::Relaxed))).collect()
+        self.inner.lock().expect("counters lock poisoned").clone()
     }
 }
 
@@ -59,5 +55,11 @@ mod tests {
         assert_eq!(c.get("unknown"), 0);
         let snap = c.snapshot();
         assert_eq!(snap.get("emails_sent"), Some(&5));
+    }
+
+    #[test]
+    fn init_tracing_is_safe_to_call_twice() {
+        init_tracing("info");
+        init_tracing("debug");
     }
 }

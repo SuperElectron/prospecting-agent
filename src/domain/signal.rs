@@ -2,6 +2,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+const STRONG_DELTA: u8 = 30;
+const MODERATE_DELTA: u8 = 15;
+const WEAK_DELTA: u8 = 5;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Signal {
     pub id: Uuid,
@@ -33,9 +37,9 @@ impl Signal {
 
     pub fn score_delta(&self) -> u8 {
         match self.strength {
-            SignalStrength::Strong => 30,
-            SignalStrength::Moderate => 15,
-            SignalStrength::Weak => 5,
+            SignalStrength::Strong => STRONG_DELTA,
+            SignalStrength::Moderate => MODERATE_DELTA,
+            SignalStrength::Weak => WEAK_DELTA,
         }
     }
 }

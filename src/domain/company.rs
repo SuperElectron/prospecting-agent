@@ -47,7 +47,11 @@ pub fn normalize_domain(raw: &str) -> String {
         .or_else(|| lower.strip_prefix("http://"))
         .unwrap_or(&lower);
     let stripped = stripped.strip_prefix("www.").unwrap_or(stripped);
-    stripped.split('/').next().unwrap_or(stripped).to_string()
+    stripped
+        .split(['/', ':', '?', '#'])
+        .next()
+        .unwrap_or(stripped)
+        .to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +73,13 @@ mod tests {
         assert_eq!(normalize_domain("http://acme.io"), "acme.io");
         assert_eq!(normalize_domain("  ACME.IO  "), "acme.io");
         assert_eq!(normalize_domain("acme.io"), "acme.io");
+    }
+
+    #[test]
+    fn normalize_domain_strips_port_query_and_fragment() {
+        assert_eq!(normalize_domain("acme.io:8080"), "acme.io");
+        assert_eq!(normalize_domain("acme.io?utm=x"), "acme.io");
+        assert_eq!(normalize_domain("acme.io#team"), "acme.io");
     }
 
     #[test]

@@ -8,6 +8,22 @@ An open-source AI prospecting agent that finds leads, researches them, and runs 
 
 **Built with a DGX Spark running gpt-oss-120B.**
 
+## Integrations
+
+| Integration | Role | Required |
+|---|---|---|
+| [Apollo](https://apollo.io) | Contact and company discovery + enrichment | Yes |
+| [Tavily](https://tavily.com) | Web research and buying-signal detection | Yes |
+| Local LLM (OpenAI-compatible) | All generation and analysis (e.g. gpt-oss-120B) | Yes |
+| [Mem0](https://mem0.ai) (self-hosted) | Semantic memory over research and interactions | Yes (bundled in compose) |
+| Postgres | System of record + job queues | Yes (bundled in compose) |
+| Gmail | Email sending + reply monitoring | One email provider |
+| [SendGrid](https://sendgrid.com) | Email sending (alternative to Gmail) | One email provider |
+| [HubSpot](https://hubspot.com) | CRM sync + engagement logging | Optional (CSV works without) |
+| CSV import | No-CRM contact source | Optional |
+| Slack | Rep notifications, digests, error alerts | Optional |
+| [HeyReach](https://heyreach.io) | LinkedIn outreach | Optional (off by default) |
+
 ## Docs
 
 - Read the [wiki](https://github.com/SuperElectron/prospecting-agent/wiki) for details. 

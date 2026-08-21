@@ -92,7 +92,10 @@ impl SequenceState {
     }
 
     pub fn advance(&mut self) {
-        if !self.stopped && self.current_step < self.max_steps {
+        if self.stopped {
+            return;
+        }
+        if self.current_step < self.max_steps {
             self.current_step += 1;
             self.last_sent_at = Some(Utc::now());
         }
@@ -147,6 +150,17 @@ mod tests {
         s.advance();
         assert_eq!(s.current_step, step);
         assert_eq!(s.stop_reason, Some(StopReason::Replied));
+    }
+
+    #[test]
+    fn terminal_stop_reason_survives_further_advances() {
+        let mut s = SequenceState::start(Uuid::new_v4(), "default", 2);
+        s.advance();
+        s.advance();
+        assert_eq!(s.stop_reason, Some(StopReason::Completed));
+        s.stop(StopReason::OptedOut);
+        s.advance();
+        assert_eq!(s.stop_reason, Some(StopReason::OptedOut));
     }
 
     #[test]
