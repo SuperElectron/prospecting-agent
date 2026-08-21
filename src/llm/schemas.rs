@@ -47,8 +47,8 @@ pub struct CompanyResearch {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AccountAssessment {
-    pub stage: String,
-    pub health: String,
+    pub stage: crate::domain::AccountStage,
+    pub health: crate::domain::AccountHealth,
     pub coordination_flags: Vec<String>,
     pub summary: String,
 }

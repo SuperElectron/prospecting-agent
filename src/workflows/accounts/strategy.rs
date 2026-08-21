@@ -2,7 +2,10 @@ use chrono::Utc;
 use sqlx::PgPool;
 
 use crate::db;
-use crate::domain::{AccountHealth, AccountStage, AccountStrategy, Contact, Signal};
+use crate::domain::{
+    AccountStrategy, Contact, FLAG_CARPET_BOMB, FLAG_CONVERTED, FLAG_NEGATIVE_EVENT,
+    FLAG_NEW_CONTACT_ADVANCED, Signal,
+};
 use crate::llm::{AccountAssessment, ChatMessage, LlmClient, Policy, inject};
 use crate::memory::{EntityRef, MemoryClient, digest};
 use crate::workflows::accounts::AccountError;
@@ -23,8 +26,13 @@ pub async fn evaluate_account_strategy(
     let contacts = db::contacts::list_by_company_domain(pool, &domain).await?;
     let signals = db::signals::for_domain(pool, &domain, 10).await?;
     let entity = EntityRef::company(&domain);
-    let memories = memory.recall("account history", Some(&entity), 20).await?;
-    let memory_digest = digest(&memories, MEMORY_DIGEST_TOKENS);
+    let memory_digest = match memory.recall("account history", Some(&entity), 20).await {
+        Ok(memories) => digest(&memories, MEMORY_DIGEST_TOKENS),
+        Err(e) => {
+            tracing::warn!(domain, error = %e, "memory recall unavailable for strategy");
+            String::new()
+        }
+    };
     let prompt = assessment_prompt(
         &domain,
         company.summary.as_deref(),
@@ -42,9 +50,9 @@ pub async fn evaluate_account_strategy(
     let assessment: AccountAssessment = llm.chat_structured(messages).await?;
     let strategy = AccountStrategy {
         domain: domain.clone(),
-        stage: parse_stage(&assessment.stage),
-        health: parse_health(&assessment.health),
-        coordination_flags: assessment.coordination_flags,
+        stage: assessment.stage,
+        health: assessment.health,
+        coordination_flags: known_flags(assessment.coordination_flags),
         summary: assessment.summary,
         updated_at: Utc::now(),
     };
@@ -57,6 +65,24 @@ pub async fn evaluate_account_strategy(
         tracing::warn!(domain, error = %e, "strategy memorize failed");
     }
     Ok(strategy)
+}
+
+fn known_flags(raw: Vec<String>) -> Vec<String> {
+    let known = [
+        FLAG_NEGATIVE_EVENT,
+        FLAG_CARPET_BOMB,
+        FLAG_NEW_CONTACT_ADVANCED,
+        FLAG_CONVERTED,
+    ];
+    let mut flags: Vec<String> = Vec::new();
+    for flag in raw {
+        if !known.contains(&flag.as_str()) {
+            tracing::warn!(flag, "llm produced an unknown coordination flag");
+        } else if !flags.contains(&flag) {
+            flags.push(flag);
+        }
+    }
+    flags
 }
 
 fn assessment_prompt(
@@ -107,35 +133,29 @@ fn assessment_prompt(
     sections.join("\n\n")
 }
 
-fn parse_stage(raw: &str) -> AccountStage {
-    match raw.to_lowercase().replace([' ', '-'], "_").as_str() {
-        "engaged" => AccountStage::Engaged,
-        "opportunity" => AccountStage::Opportunity,
-        "multi_threaded" => AccountStage::MultiThreaded,
-        "customer" => AccountStage::Customer,
-        "dormant" => AccountStage::Dormant,
-        _ => AccountStage::Prospecting,
-    }
-}
-
-fn parse_health(raw: &str) -> AccountHealth {
-    match raw.to_lowercase().as_str() {
-        "blocked" => AccountHealth::Blocked,
-        "watch" => AccountHealth::Watch,
-        _ => AccountHealth::Healthy,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn stage_and_health_parsing_default_conservatively() {
-        assert_eq!(parse_stage("Multi Threaded"), AccountStage::MultiThreaded);
-        assert_eq!(parse_stage("weird"), AccountStage::Prospecting);
-        assert_eq!(parse_health("BLOCKED"), AccountHealth::Blocked);
-        assert_eq!(parse_health("odd"), AccountHealth::Healthy);
+    fn unknown_flags_are_dropped_and_duplicates_collapse() {
+        let flags = known_flags(vec![
+            FLAG_CARPET_BOMB.into(),
+            "do_not_contact".into(),
+            FLAG_CARPET_BOMB.into(),
+            FLAG_CONVERTED.into(),
+        ]);
+        assert_eq!(
+            flags,
+            vec![FLAG_CARPET_BOMB.to_string(), FLAG_CONVERTED.to_string()]
+        );
+    }
+
+    #[test]
+    fn assessment_schema_constrains_stage_and_health() {
+        let instruction = crate::llm::schemas::schema_instruction::<AccountAssessment>();
+        assert!(instruction.contains("multi_threaded"));
+        assert!(instruction.contains("blocked"));
     }
 
     #[test]

@@ -8,11 +8,13 @@ use crate::domain::{
 };
 use crate::workflows::accounts::AccountError;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PreflightConfig {
     pub carpet_bomb_window_days: i32,
     pub max_contacts_per_window: i64,
     pub negative_event_delay_days: i64,
+    pub warm_intro_cadence: String,
+    pub warm_intro_max_emails: u8,
 }
 
 impl Default for PreflightConfig {
@@ -21,7 +23,15 @@ impl Default for PreflightConfig {
             carpet_bomb_window_days: 7,
             max_contacts_per_window: 2,
             negative_event_delay_days: 21,
+            warm_intro_cadence: "warm-intro".into(),
+            warm_intro_max_emails: 2,
         }
+    }
+}
+
+impl PreflightConfig {
+    fn window_days(&self) -> i32 {
+        self.carpet_bomb_window_days.max(1)
     }
 }
 
@@ -47,49 +57,52 @@ pub async fn preflight(
     if let Some(blocked) = hard_block(&strategy) {
         return Ok(blocked);
     }
-    if strategy
-        .coordination_flags
-        .iter()
-        .any(|f| f == FLAG_NEGATIVE_EVENT)
-    {
+    if has_flag(&strategy, FLAG_NEGATIVE_EVENT) {
         return Ok(PreflightDecision::Delay {
             until: Utc::now() + Duration::days(config.negative_event_delay_days),
             reason: "negative company event; outreach paused".into(),
         });
     }
-    if strategy.coordination_flags.iter().any(|f| f == FLAG_CARPET_BOMB) {
-        let touched = db::engagements::recent_outbound_contacts_for_domain(
+    if has_flag(&strategy, FLAG_CARPET_BOMB) {
+        let touch = db::engagements::recent_outbound_contacts_for_domain(
             pool,
             domain,
-            config.carpet_bomb_window_days,
+            config.window_days(),
+            Some(contact.id),
         )
         .await?;
-        if touched >= config.max_contacts_per_window {
+        if touch.touched >= config.max_contacts_per_window {
+            let until = touch.oldest.map_or_else(Utc::now, |oldest| {
+                oldest + Duration::days(i64::from(config.window_days()))
+            });
             return Ok(PreflightDecision::Delay {
-                until: Utc::now() + Duration::days(i64::from(config.carpet_bomb_window_days)),
-                reason: format!("{touched} contacts already emailed at {domain} this window"),
+                until,
+                reason: format!(
+                    "{touched} other contacts already emailed at {domain} this window",
+                    touched = touch.touched
+                ),
             });
         }
     }
-    if strategy
-        .coordination_flags
-        .iter()
-        .any(|f| f == FLAG_NEW_CONTACT_ADVANCED)
-        && strategy.stage.is_advanced()
-        && is_untouched(contact)
+    if has_flag(&strategy, FLAG_NEW_CONTACT_ADVANCED) && strategy.stage.is_advanced() && is_untouched(contact)
     {
         return Ok(PreflightDecision::Modify {
-            cadence: "warm-intro".into(),
-            max_emails: 2,
+            cadence: config.warm_intro_cadence.clone(),
+            max_emails: config.warm_intro_max_emails,
         });
     }
     Ok(PreflightDecision::Proceed)
 }
 
+fn has_flag(strategy: &AccountStrategy, flag: &str) -> bool {
+    strategy
+        .coordination_flags
+        .iter()
+        .any(|candidate| candidate == flag)
+}
+
 fn hard_block(strategy: &AccountStrategy) -> Option<PreflightDecision> {
-    if strategy.stage == AccountStage::Customer
-        || strategy.coordination_flags.iter().any(|f| f == FLAG_CONVERTED)
-    {
+    if strategy.stage == AccountStage::Customer || has_flag(strategy, FLAG_CONVERTED) {
         return Some(PreflightDecision::Block {
             reason: "account converted to customer".into(),
         });

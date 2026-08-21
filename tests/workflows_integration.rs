@@ -597,12 +597,12 @@ async fn company_enrichment_preserves_scoring_state() {
         .expect(1)
         .mount(&apollo_server)
         .await;
-    let mut credits: u16 = 500;
+    let mut credits: u16 = 5000;
     let report = prospecting_agent::workflows::discovery::enrich_companies(
         &pool,
         &memory_client(&memory_server),
         &apollo_client(&apollo_server),
-        200,
+        10_000,
         &mut credits,
     )
     .await
@@ -711,17 +711,41 @@ async fn preflight_delays_on_carpet_bomb_when_recent_sends_hit_the_cap() {
     fresh.email = Some(format!("fresh-{}@{domain}", uuid::Uuid::new_v4().simple()));
     fresh.company_domain = Some(domain.clone());
     db::contacts::upsert(&pool, &fresh).await.unwrap();
-    let decision = prospecting_agent::workflows::accounts::preflight(
-        &pool,
-        &prospecting_agent::workflows::accounts::PreflightConfig::default(),
-        &fresh,
-    )
-    .await
-    .unwrap();
+    let config = prospecting_agent::workflows::accounts::PreflightConfig::default();
+    let decision = prospecting_agent::workflows::accounts::preflight(&pool, &config, &fresh)
+        .await
+        .unwrap();
     assert!(matches!(
         decision,
         prospecting_agent::workflows::accounts::PreflightDecision::Delay { .. }
     ));
+
+    let touched_contact = db::contacts::list_by_company_domain(&pool, &domain)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|c| c.id != fresh.id)
+        .unwrap();
+    let in_flight = prospecting_agent::workflows::accounts::preflight(&pool, &config, &touched_contact)
+        .await
+        .unwrap();
+    assert_eq!(
+        in_flight,
+        prospecting_agent::workflows::accounts::PreflightDecision::Proceed
+    );
+
+    sqlx::query("UPDATE engagements SET occurred_at = now() - interval '30 days' WHERE contact_id IN (SELECT id FROM contacts WHERE company_domain = $1)")
+        .bind(&domain)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let aged_out = prospecting_agent::workflows::accounts::preflight(&pool, &config, &fresh)
+        .await
+        .unwrap();
+    assert_eq!(
+        aged_out,
+        prospecting_agent::workflows::accounts::PreflightDecision::Proceed
+    );
 }
 
 #[tokio::test]
