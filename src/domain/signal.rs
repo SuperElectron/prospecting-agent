@@ -26,7 +26,7 @@ impl Signal {
     ) -> Self {
         Self {
             id: Uuid::new_v4(),
-            company_domain: company_domain.into(),
+            company_domain: crate::domain::normalize_domain(&company_domain.into()),
             kind,
             strength,
             summary: summary.into(),

@@ -83,6 +83,14 @@ mod tests {
     }
 
     #[test]
+    fn normalize_domain_handles_empty_and_odd_input() {
+        assert_eq!(normalize_domain(""), "");
+        assert_eq!(normalize_domain("https://"), "");
+        assert_eq!(normalize_domain("://"), "");
+        assert_eq!(normalize_domain("WWW.MÜNCHEN.de"), "münchen.de");
+    }
+
+    #[test]
     fn new_company_normalizes_its_domain() {
         let c = Company::new("https://www.Example.com/pricing");
         assert_eq!(c.domain, "example.com");

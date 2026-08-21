@@ -59,13 +59,19 @@ pub async fn upsert(pool: &PgPool, company: &Company) -> Result<uuid::Uuid, DbEr
          RETURNING id",
     )
     .bind(company.id)
-    .bind(&company.domain)
+    .bind(crate::domain::normalize_domain(&company.domain))
     .bind(&company.name)
     .bind(&company.industry)
     .bind(
         company
             .employee_count
-            .map(|n| i32::try_from(n).unwrap_or(i32::MAX)),
+            .map(|n| {
+                i32::try_from(n).map_err(|_| DbError::Codec {
+                    context: "company.employee_count",
+                    reason: format!("{n} out of range"),
+                })
+            })
+            .transpose()?,
     )
     .bind(&company.location)
     .bind(&company.linkedin_url)
@@ -82,7 +88,7 @@ pub async fn upsert(pool: &PgPool, company: &Company) -> Result<uuid::Uuid, DbEr
 
 pub async fn by_domain(pool: &PgPool, domain: &str) -> Result<Option<Company>, DbError> {
     let row = sqlx::query("SELECT * FROM companies WHERE domain = $1")
-        .bind(domain)
+        .bind(crate::domain::normalize_domain(domain))
         .fetch_optional(pool)
         .await?;
     row.as_ref().map(from_row).transpose()

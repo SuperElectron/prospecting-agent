@@ -1,10 +1,18 @@
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum EntityRef {
     Contact(Uuid),
     Company(String),
 }
+
+impl PartialEq for EntityRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.tag() == other.tag()
+    }
+}
+
+impl Eq for EntityRef {}
 
 impl EntityRef {
     pub fn company(raw_domain: &str) -> Self {
@@ -60,6 +68,13 @@ mod tests {
         let b = EntityRef::company("acme.io");
         assert_eq!(a, b);
         assert_eq!(a.tag(), "company:acme.io");
+    }
+
+    #[test]
+    fn unnormalized_variant_round_trips_and_equals_its_normal_form() {
+        let raw = EntityRef::Company("Acme.IO".into());
+        assert_eq!(EntityRef::parse(&raw.tag()), Some(raw.clone()));
+        assert_eq!(raw, EntityRef::company("acme.io"));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use tracing_subscriber::EnvFilter;
 
@@ -26,17 +26,17 @@ impl Counters {
     }
 
     pub fn add(&self, name: &'static str, amount: u64) {
-        let mut map = self.inner.lock().expect("counters lock poisoned");
+        let mut map = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         *map.entry(name).or_insert(0) += amount;
     }
 
     pub fn get(&self, name: &'static str) -> u64 {
-        let map = self.inner.lock().expect("counters lock poisoned");
+        let map = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         map.get(name).copied().unwrap_or(0)
     }
 
     pub fn snapshot(&self) -> HashMap<&'static str, u64> {
-        self.inner.lock().expect("counters lock poisoned").clone()
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 }
 

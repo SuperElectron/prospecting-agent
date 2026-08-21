@@ -67,6 +67,9 @@ impl MessagingRules {
 }
 
 fn contains_word_bounded(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
     let mut start = 0;
     while let Some(pos) = haystack[start..].find(needle) {
         let begin = start + pos;
@@ -129,6 +132,15 @@ mod tests {
     fn substring_inside_a_word_is_not_flagged() {
         let rules = MessagingRules::default();
         assert!(rules.passes("Congrats on deleveraging the balance sheet at Synergyx.", true));
+    }
+
+    #[test]
+    fn empty_banned_phrase_does_not_hang_or_flag() {
+        let rules = MessagingRules {
+            banned_phrases: vec![String::new()],
+            ..MessagingRules::default()
+        };
+        assert!(rules.passes("perfectly fine text", true));
     }
 
     #[test]

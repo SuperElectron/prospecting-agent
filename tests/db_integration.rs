@@ -6,7 +6,13 @@ use prospecting_agent::domain::{
 };
 
 async fn test_pool() -> Option<sqlx::PgPool> {
-    let url = std::env::var("TEST_DATABASE_URL").ok()?;
+    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+        assert!(
+            std::env::var("CI").is_err(),
+            "TEST_DATABASE_URL must be set in CI so db tests cannot pass vacuously"
+        );
+        return None;
+    };
     let pool = db::connect(&url).await.expect("connect to test database");
     db::migrate(&pool).await.expect("run migrations");
     Some(pool)
@@ -147,6 +153,139 @@ async fn signals_store_and_query_by_domain() {
     let found = db::signals::for_domain(&pool, &domain, 5).await.unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].strength, SignalStrength::Strong);
+}
+
+#[tokio::test]
+async fn contact_upsert_survives_an_email_change_on_an_existing_id() {
+    let pool = require_pool!();
+    let mut contact = Contact::new(ContactSource::Csv);
+    contact.email = None;
+    db::contacts::upsert(&pool, &contact).await.unwrap();
+    contact.email = Some(format!("late-{}@example.com", contact.id));
+    let resolved = db::contacts::upsert(&pool, &contact).await.unwrap();
+    assert_eq!(resolved, contact.id);
+    let loaded = db::contacts::by_id(&pool, contact.id).await.unwrap().unwrap();
+    assert_eq!(loaded.email, contact.email);
+}
+
+#[tokio::test]
+async fn signal_lookup_matches_a_normalized_company_domain() {
+    let pool = require_pool!();
+    let slug = uuid::Uuid::new_v4();
+    let company = Company::new(format!("https://www.Norm-{slug}.example.com"));
+    db::companies::upsert(&pool, &company).await.unwrap();
+    let signal = Signal::new(
+        format!("www.Norm-{slug}.example.com"),
+        SignalKind::Funding,
+        SignalStrength::Strong,
+        "raised",
+    );
+    db::signals::insert(&pool, &signal).await.unwrap();
+    let found = db::signals::for_domain(&pool, &company.domain, 5).await.unwrap();
+    assert_eq!(found.len(), 1);
+    let via_raw = db::signals::for_domain(&pool, &format!("WWW.norm-{slug}.EXAMPLE.com"), 5)
+        .await
+        .unwrap();
+    assert_eq!(via_raw.len(), 1);
+}
+
+#[tokio::test]
+async fn repeated_signal_insert_is_idempotent() {
+    let pool = require_pool!();
+    let domain = format!("dupe-sig-{}.example.com", uuid::Uuid::new_v4());
+    let first = Signal::new(
+        &domain,
+        SignalKind::Hiring,
+        SignalStrength::Moderate,
+        "hiring ops",
+    );
+    let second = Signal::new(
+        &domain,
+        SignalKind::Hiring,
+        SignalStrength::Moderate,
+        "hiring ops",
+    );
+    db::signals::insert(&pool, &first).await.unwrap();
+    db::signals::insert(&pool, &second).await.unwrap();
+    let found = db::signals::for_domain(&pool, &domain, 10).await.unwrap();
+    assert_eq!(found.len(), 1);
+}
+
+#[tokio::test]
+async fn double_send_at_different_instants_is_deduped() {
+    let pool = require_pool!();
+    let contact = Contact::new(ContactSource::Csv);
+    db::contacts::upsert(&pool, &contact).await.unwrap();
+    let mut first = Engagement::outbound(contact.id, Channel::Email, EngagementKind::Sent);
+    first.sequence_step = Some(2);
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let mut second = Engagement::outbound(contact.id, Channel::Email, EngagementKind::Sent);
+    second.sequence_step = Some(2);
+    assert_ne!(first.occurred_at, second.occurred_at);
+    db::engagements::insert(&pool, &first).await.unwrap();
+    db::engagements::insert(&pool, &second).await.unwrap();
+    let history = db::engagements::for_contact(&pool, contact.id, 10).await.unwrap();
+    assert_eq!(history.len(), 1);
+}
+
+#[tokio::test]
+async fn employee_count_above_i32_max_is_an_error_not_a_clamp() {
+    let pool = require_pool!();
+    let mut company = Company::new(format!("big-{}.example.com", uuid::Uuid::new_v4()));
+    company.employee_count = Some(u32::MAX);
+    let err = db::companies::upsert(&pool, &company).await.unwrap_err();
+    assert!(matches!(
+        err,
+        db::DbError::Codec {
+            context: "company.employee_count",
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn concurrent_reservations_never_exceed_the_cap() {
+    let pool = require_pool!();
+    let sender = format!("conc-{}", uuid::Uuid::new_v4());
+    let day = Utc::now().date_naive();
+    let mut handles = Vec::new();
+    for _ in 0..10 {
+        let pool = pool.clone();
+        let sender = sender.clone();
+        handles.push(tokio::spawn(async move {
+            db::capacity::try_reserve(&pool, &sender, day, 3).await
+        }));
+    }
+    let mut granted = 0;
+    for handle in handles {
+        if handle.await.unwrap().unwrap() {
+            granted += 1;
+        }
+    }
+    assert_eq!(granted, 3);
+    assert_eq!(db::capacity::sent_today(&pool, &sender, day).await.unwrap(), 3);
+}
+
+#[tokio::test]
+async fn audit_round_trips_null_confidence_and_null_old_value() {
+    let pool = require_pool!();
+    let entity_id = uuid::Uuid::new_v4().to_string();
+    let change = db::audit::PropertyChange {
+        entity_type: "company".into(),
+        entity_id: entity_id.clone(),
+        property: "summary".into(),
+        old_value: None,
+        new_value: serde_json::json!("first summary"),
+        confidence: None,
+        updated_by: "research".into(),
+    };
+    db::audit::record(&pool, &change).await.unwrap();
+    let history = db::audit::history(&pool, "company", &entity_id, 10)
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].change.old_value, None);
+    assert_eq!(history[0].change.confidence, None);
 }
 
 #[tokio::test]

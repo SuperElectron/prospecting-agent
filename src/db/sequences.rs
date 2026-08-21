@@ -26,8 +26,8 @@ fn from_row(row: &PgRow) -> Result<SequenceState, DbError> {
     })
 }
 
-pub async fn upsert(pool: &PgPool, s: &SequenceState) -> Result<(), DbError> {
-    let stop_reason = s
+pub async fn upsert(pool: &PgPool, state: &SequenceState) -> Result<(), DbError> {
+    let stop_reason = state
         .stop_reason
         .as_ref()
         .map(|r| enum_to_str(r, "sequence.stop_reason"))
@@ -40,12 +40,12 @@ pub async fn upsert(pool: &PgPool, s: &SequenceState) -> Result<(), DbError> {
          last_sent_at = EXCLUDED.last_sent_at, stopped = EXCLUDED.stopped, \
          stop_reason = EXCLUDED.stop_reason",
     )
-    .bind(s.contact_id)
-    .bind(&s.cadence)
-    .bind(i16::from(s.current_step))
-    .bind(i16::from(s.max_steps))
-    .bind(s.last_sent_at)
-    .bind(s.stopped)
+    .bind(state.contact_id)
+    .bind(&state.cadence)
+    .bind(i16::from(state.current_step))
+    .bind(i16::from(state.max_steps))
+    .bind(state.last_sent_at)
+    .bind(state.stopped)
     .bind(stop_reason)
     .execute(pool)
     .await?;

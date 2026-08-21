@@ -15,18 +15,18 @@ fn from_row(row: &PgRow) -> Result<Signal, DbError> {
     })
 }
 
-pub async fn insert(pool: &PgPool, s: &Signal) -> Result<(), DbError> {
+pub async fn insert(pool: &PgPool, signal: &Signal) -> Result<(), DbError> {
     sqlx::query(
         "INSERT INTO signals (id, company_domain, kind, strength, summary, source_url, detected_at) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7)",
+         VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING",
     )
-    .bind(s.id)
-    .bind(&s.company_domain)
-    .bind(enum_to_str(&s.kind, "signal.kind")?)
-    .bind(enum_to_str(&s.strength, "signal.strength")?)
-    .bind(&s.summary)
-    .bind(&s.source_url)
-    .bind(s.detected_at)
+    .bind(signal.id)
+    .bind(crate::domain::normalize_domain(&signal.company_domain))
+    .bind(enum_to_str(&signal.kind, "signal.kind")?)
+    .bind(enum_to_str(&signal.strength, "signal.strength")?)
+    .bind(&signal.summary)
+    .bind(&signal.source_url)
+    .bind(signal.detected_at)
     .execute(pool)
     .await?;
     Ok(())
@@ -35,7 +35,7 @@ pub async fn insert(pool: &PgPool, s: &Signal) -> Result<(), DbError> {
 pub async fn for_domain(pool: &PgPool, domain: &str, limit: i64) -> Result<Vec<Signal>, DbError> {
     let rows =
         sqlx::query("SELECT * FROM signals WHERE company_domain = $1 ORDER BY detected_at DESC LIMIT $2")
-            .bind(domain)
+            .bind(crate::domain::normalize_domain(domain))
             .bind(limit)
             .fetch_all(pool)
             .await?;
