@@ -1,0 +1,239 @@
+use prospecting_agent::config::{AppConfig, Secret};
+use prospecting_agent::connectors::gmail::{GmailConnector, OauthClient, SenderAccount};
+use prospecting_agent::db;
+use prospecting_agent::domain::{Contact, ContactSource, ContactStatus};
+use prospecting_agent::jobs::JobContext;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn test_config(database_url: &str) -> AppConfig {
+    let env: prospecting_agent::config::EnvMap = [
+        ("DATABASE_URL", database_url),
+        ("LLM_BASE_URL", "http://127.0.0.1:1/v1"),
+        ("LLM_MODEL", "test-model"),
+        ("MEMORY_URL", "http://127.0.0.1:1"),
+        ("APOLLO_API_KEY", "test-apollo"),
+        ("TAVILY_API_KEY", "test-tavily"),
+        ("GMAIL_CLIENT_FILE", "/nonexistent/client.json"),
+        ("GMAIL_SENDERS_FILE", "/nonexistent/senders.json"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    AppConfig::from_map(&env).expect("test config parses")
+}
+
+async fn test_ctx() -> Option<JobContext> {
+    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+        assert!(
+            std::env::var("CI").is_err(),
+            "TEST_DATABASE_URL must be set in CI so inbound tests cannot pass vacuously"
+        );
+        eprintln!("TEST_DATABASE_URL not set; skipping inbound integration test");
+        return None;
+    };
+    let pool = db::connect(&url).await.expect("connect to test database");
+    db::migrate(&pool).await.expect("run migrations");
+    Some(JobContext::from_config(pool, test_config(&url)))
+}
+
+async fn mount_token(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"access_token": "at-1", "expires_in": 3599})),
+        )
+        .mount(server)
+        .await;
+}
+
+fn mock_gmail(server: &MockServer, pool: sqlx::PgPool, sender_email: &str) -> GmailConnector {
+    let oauth = OauthClient::new("cid", Secret::new("csec")).with_bases(&server.uri(), &server.uri());
+    let sender = SenderAccount {
+        email: sender_email.to_string(),
+        name: "Test Sender".into(),
+        refresh_token: "rt-test".into(),
+        daily_limit: 50,
+    };
+    GmailConnector::new(oauth, vec![sender], pool).with_api_base(&server.uri())
+}
+
+async fn mount_memory_ok(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/api/v1/memories/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "m"})))
+        .mount(server)
+        .await;
+}
+
+fn completion_with(content: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"choices": [{"message": {"role": "assistant",
+        "content": content.to_string()}}]})
+}
+
+#[tokio::test]
+async fn reply_monitor_processes_a_matched_reply_once() {
+    let Some(mut ctx) = test_ctx().await else { return };
+    let gmail_server = MockServer::start().await;
+    let llm_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    mount_token(&gmail_server).await;
+    mount_memory_ok(&memory_server).await;
+
+    let stamp = uuid::Uuid::new_v4().simple().to_string();
+    let contact_email = format!("replier-{stamp}@inbound.example.com");
+    let mut contact = Contact::new(ContactSource::Csv);
+    contact.email = Some(contact_email.clone());
+    contact.status = ContactStatus::InSequence;
+    db::contacts::upsert(&ctx.pool, &contact).await.unwrap();
+
+    let message_id = format!("msg-{stamp}");
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "messages": [{"id": message_id, "threadId": "t-1"}],
+        })))
+        .mount(&gmail_server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/gmail/v1/users/me/messages/{message_id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": message_id, "threadId": "t-1",
+            "snippet": "Sounds interesting, tell me more about pricing.",
+            "payload": {"headers": [
+                {"name": "From", "value": format!("Replier <{contact_email}>")},
+                {"name": "Subject", "value": "Re: Rollout speed"},
+            ]},
+        })))
+        .mount(&gmail_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
+                "intent": "interested",
+                "summary": "Wants pricing details.",
+                "suggested_action": "send pricing overview",
+                "notify_rep": true,
+            }))),
+        )
+        .mount(&llm_server)
+        .await;
+
+    ctx.gmail = Some(mock_gmail(
+        &gmail_server,
+        ctx.pool.clone(),
+        "sender@inbound.example.com",
+    ));
+    ctx.llm = prospecting_agent::llm::LlmClient::new(&prospecting_agent::config::LlmConfig {
+        base_url: format!("{}/v1", llm_server.uri()),
+        api_key: Secret::new("test"),
+        model: "test-model".into(),
+    });
+    ctx.memory = prospecting_agent::memory::MemoryClient::new(&prospecting_agent::config::MemoryConfig {
+        base_url: memory_server.uri(),
+        user: "test".into(),
+    });
+
+    let first = prospecting_agent::jobs::inbound::poll_replies(&ctx)
+        .await
+        .unwrap();
+    assert_eq!(first.replies_processed, 1, "report: {first:?}");
+    assert_eq!(first.failures, 0);
+    let after = db::contacts::by_email(&ctx.pool, &contact_email)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.status, ContactStatus::Replied);
+    let engagements = db::engagements::for_contact(&ctx.pool, contact.id, 10)
+        .await
+        .unwrap();
+    assert_eq!(engagements.len(), 1);
+
+    let second = prospecting_agent::jobs::inbound::poll_replies(&ctx)
+        .await
+        .unwrap();
+    assert_eq!(second.replies_processed, 0);
+    assert_eq!(second.already_processed, 1);
+}
+
+#[tokio::test]
+async fn unmatched_sender_is_recorded_but_not_analyzed() {
+    let Some(mut ctx) = test_ctx().await else { return };
+    let gmail_server = MockServer::start().await;
+    mount_token(&gmail_server).await;
+    let stamp = uuid::Uuid::new_v4().simple().to_string();
+    let message_id = format!("stranger-{stamp}");
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "messages": [{"id": message_id, "threadId": "t-2"}],
+        })))
+        .mount(&gmail_server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/gmail/v1/users/me/messages/{message_id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": message_id, "threadId": "t-2", "snippet": "hello",
+            "payload": {"headers": [
+                {"name": "From", "value": format!("Stranger <nobody-{stamp}@unknown.example.com>")},
+            ]},
+        })))
+        .mount(&gmail_server)
+        .await;
+    ctx.gmail = Some(mock_gmail(
+        &gmail_server,
+        ctx.pool.clone(),
+        "sender@inbound.example.com",
+    ));
+    let report = prospecting_agent::jobs::inbound::poll_replies(&ctx)
+        .await
+        .unwrap();
+    assert_eq!(report.unmatched, 1);
+    assert_eq!(report.replies_processed, 0);
+}
+
+#[tokio::test]
+async fn failed_processing_releases_the_claim_for_retry() {
+    let Some(mut ctx) = test_ctx().await else { return };
+    let gmail_server = MockServer::start().await;
+    mount_token(&gmail_server).await;
+    let stamp = uuid::Uuid::new_v4().simple().to_string();
+    let message_id = format!("broken-{stamp}");
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "messages": [{"id": message_id, "threadId": "t-3"}],
+        })))
+        .mount(&gmail_server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/gmail/v1/users/me/messages/{message_id}")))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&gmail_server)
+        .await;
+    ctx.gmail = Some(mock_gmail(
+        &gmail_server,
+        ctx.pool.clone(),
+        "sender@inbound.example.com",
+    ));
+    let report = prospecting_agent::jobs::inbound::poll_replies(&ctx)
+        .await
+        .unwrap();
+    assert_eq!(report.failures, 1);
+    let reclaimed = db::inbound::claim_message(&ctx.pool, &message_id, "sender@inbound.example.com")
+        .await
+        .unwrap();
+    assert!(reclaimed, "failed message should be claimable again");
+}
+
+#[tokio::test]
+async fn message_claims_are_exclusive() {
+    let Some(ctx) = test_ctx().await else { return };
+    let id = format!("claim-{}", uuid::Uuid::new_v4().simple());
+    assert!(db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap());
+    assert!(!db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap());
+    db::inbound::release_message(&ctx.pool, &id).await.unwrap();
+    assert!(db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap());
+}
