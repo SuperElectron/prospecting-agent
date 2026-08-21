@@ -16,8 +16,12 @@ pub struct WeeklyReport {
 
 impl WeeklyReport {
     pub fn render(&self) -> String {
+        self.render_with_label("weekly report")
+    }
+
+    pub fn render_with_label(&self, label: &str) -> String {
         format!(
-            "weekly report: {sent} emails sent, {replies} replies, {optouts} opt-outs, \
+            "{label}: {sent} emails sent, {replies} replies, {optouts} opt-outs, \
              {contacts} contacts added, {companies} companies added, {signals} signals detected, \
              {stopped} sequences stopped",
             sent = self.emails_sent,
