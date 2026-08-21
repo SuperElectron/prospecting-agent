@@ -63,6 +63,8 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
+      llm-router:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/8765' || exit 1"]
       interval: 10s
