@@ -22,7 +22,11 @@
     "deny": [
       "Read(.env)",
       "Read(.env.*)",
-      "Read(.claude/settings.local.json)"
+      "Read(.claude/settings.local.json)",
+      "Read(.claude/secrets/**)",
+      "Read(**/credentials.json)",
+      "Read(**/token.json)",
+      "Read(**/*.pem)"
     ]
   },
   "env": {

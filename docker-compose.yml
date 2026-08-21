@@ -6,26 +6,46 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-prospecting}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  mem0:
-    image: mem0ai/mem0-api-server:latest
+  qdrant:
+    image: qdrant/qdrant:v1.15.5
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  memory:
+    image: mem0/openmemory-mcp@sha256:b665d382a94fdc18c7bb84a647d4bebdc98d9e7fc1146fc5e559ca7f5f7f9211
     environment:
-      OPENAI_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:8000/v1}
+      OPENAI_BASE_URL: ${LLM_BASE_URL_DOCKER:-http://host.docker.internal:8000/v1}
       OPENAI_API_KEY: ${LLM_API_KEY:-local}
-      MEM0_LLM_MODEL: ${LLM_MODEL:-gpt-oss-120b}
+      QDRANT_HOST: qdrant
+      USER: ${MEMORY_USER:-prospecting}
     ports:
-      - "8888:8000"
+      - "127.0.0.1:8765:8765"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
-      postgres:
+      qdrant:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/8765' || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
 
 volumes:
   pgdata:
+  qdrant_data:
