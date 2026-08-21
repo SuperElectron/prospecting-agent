@@ -15,10 +15,13 @@ fn from_row(row: &PgRow) -> Result<Signal, DbError> {
     })
 }
 
-pub async fn insert(pool: &PgPool, signal: &Signal) -> Result<(), DbError> {
+pub async fn upsert(pool: &PgPool, signal: &Signal) -> Result<(), DbError> {
     sqlx::query(
         "INSERT INTO signals (id, company_domain, kind, strength, summary, source_url, detected_at) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING",
+         VALUES ($1,$2,$3,$4,$5,$6,$7) \
+         ON CONFLICT (company_domain, kind, md5(summary)) DO UPDATE SET \
+         strength = EXCLUDED.strength, source_url = EXCLUDED.source_url, \
+         detected_at = EXCLUDED.detected_at",
     )
     .bind(signal.id)
     .bind(crate::domain::normalize_domain(&signal.company_domain))

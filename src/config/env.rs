@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::config::secret::Secret;
+use super::secret::Secret;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ConfigError {

@@ -26,8 +26,8 @@ fn from_row(row: &PgRow) -> Result<Engagement, DbError> {
     })
 }
 
-pub async fn insert(pool: &PgPool, engagement: &Engagement) -> Result<(), DbError> {
-    sqlx::query(
+pub async fn insert(pool: &PgPool, engagement: &Engagement) -> Result<bool, DbError> {
+    let result = sqlx::query(
         "INSERT INTO engagements (id, contact_id, channel, direction, kind, subject, body, \
          sequence_step, occurred_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING",
     )
@@ -42,7 +42,7 @@ pub async fn insert(pool: &PgPool, engagement: &Engagement) -> Result<(), DbErro
     .bind(engagement.occurred_at)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(result.rows_affected() > 0)
 }
 
 pub async fn for_contact(pool: &PgPool, contact_id: Uuid, limit: i64) -> Result<Vec<Engagement>, DbError> {

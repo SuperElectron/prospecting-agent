@@ -150,7 +150,6 @@ impl LlmClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::secret::Secret;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

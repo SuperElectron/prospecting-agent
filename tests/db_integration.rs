@@ -90,10 +90,10 @@ async fn duplicate_engagement_delivery_is_ignored() {
     let contact = Contact::new(ContactSource::Csv);
     db::contacts::upsert(&pool, &contact).await.unwrap();
     let event = Engagement::outbound(contact.id, Channel::Email, EngagementKind::Opened);
-    db::engagements::insert(&pool, &event).await.unwrap();
+    assert!(db::engagements::insert(&pool, &event).await.unwrap());
     let mut redelivered = event.clone();
     redelivered.id = uuid::Uuid::new_v4();
-    db::engagements::insert(&pool, &redelivered).await.unwrap();
+    assert!(!db::engagements::insert(&pool, &redelivered).await.unwrap());
     let history = db::engagements::for_contact(&pool, contact.id, 10).await.unwrap();
     assert_eq!(history.len(), 1);
 }
@@ -149,7 +149,7 @@ async fn signals_store_and_query_by_domain() {
         SignalStrength::Strong,
         "raised series B",
     );
-    db::signals::insert(&pool, &s).await.unwrap();
+    db::signals::upsert(&pool, &s).await.unwrap();
     let found = db::signals::for_domain(&pool, &domain, 5).await.unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].strength, SignalStrength::Strong);
@@ -180,7 +180,7 @@ async fn signal_lookup_matches_a_normalized_company_domain() {
         SignalStrength::Strong,
         "raised",
     );
-    db::signals::insert(&pool, &signal).await.unwrap();
+    db::signals::upsert(&pool, &signal).await.unwrap();
     let found = db::signals::for_domain(&pool, &company.domain, 5).await.unwrap();
     assert_eq!(found.len(), 1);
     let via_raw = db::signals::for_domain(&pool, &format!("WWW.norm-{slug}.EXAMPLE.com"), 5)
@@ -190,7 +190,7 @@ async fn signal_lookup_matches_a_normalized_company_domain() {
 }
 
 #[tokio::test]
-async fn repeated_signal_insert_is_idempotent() {
+async fn repeated_signal_upsert_keeps_one_row_and_refreshes_recency() {
     let pool = require_pool!();
     let domain = format!("dupe-sig-{}.example.com", uuid::Uuid::new_v4());
     let first = Signal::new(
@@ -199,16 +199,15 @@ async fn repeated_signal_insert_is_idempotent() {
         SignalStrength::Moderate,
         "hiring ops",
     );
-    let second = Signal::new(
-        &domain,
-        SignalKind::Hiring,
-        SignalStrength::Moderate,
-        "hiring ops",
-    );
-    db::signals::insert(&pool, &first).await.unwrap();
-    db::signals::insert(&pool, &second).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let second = Signal::new(&domain, SignalKind::Hiring, SignalStrength::Strong, "hiring ops");
+    db::signals::upsert(&pool, &first).await.unwrap();
+    db::signals::upsert(&pool, &second).await.unwrap();
     let found = db::signals::for_domain(&pool, &domain, 10).await.unwrap();
     assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id, first.id);
+    assert_eq!(found[0].strength, SignalStrength::Strong);
+    assert!(found[0].detected_at > first.detected_at);
 }
 
 #[tokio::test]
@@ -222,8 +221,8 @@ async fn double_send_at_different_instants_is_deduped() {
     let mut second = Engagement::outbound(contact.id, Channel::Email, EngagementKind::Sent);
     second.sequence_step = Some(2);
     assert_ne!(first.occurred_at, second.occurred_at);
-    db::engagements::insert(&pool, &first).await.unwrap();
-    db::engagements::insert(&pool, &second).await.unwrap();
+    assert!(db::engagements::insert(&pool, &first).await.unwrap());
+    assert!(!db::engagements::insert(&pool, &second).await.unwrap());
     let history = db::engagements::for_contact(&pool, contact.id, 10).await.unwrap();
     assert_eq!(history.len(), 1);
 }
@@ -243,7 +242,7 @@ async fn employee_count_above_i32_max_is_an_error_not_a_clamp() {
     ));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_reservations_never_exceed_the_cap() {
     let pool = require_pool!();
     let sender = format!("conc-{}", uuid::Uuid::new_v4());
@@ -270,7 +269,7 @@ async fn concurrent_reservations_never_exceed_the_cap() {
 async fn audit_round_trips_null_confidence_and_null_old_value() {
     let pool = require_pool!();
     let entity_id = uuid::Uuid::new_v4().to_string();
-    let change = db::audit::PropertyChange {
+    let change = db::PropertyChange {
         entity_type: "company".into(),
         entity_id: entity_id.clone(),
         property: "summary".into(),
@@ -292,7 +291,7 @@ async fn audit_round_trips_null_confidence_and_null_old_value() {
 async fn audit_records_property_changes() {
     let pool = require_pool!();
     let entity_id = uuid::Uuid::new_v4().to_string();
-    let change = db::audit::PropertyChange {
+    let change = db::PropertyChange {
         entity_type: "contact".into(),
         entity_id: entity_id.clone(),
         property: "score".into(),
