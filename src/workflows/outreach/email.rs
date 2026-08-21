@@ -5,7 +5,7 @@ use crate::config::MessagingRules;
 use crate::db;
 use crate::domain::{Contact, Direction};
 use crate::llm::{ChatMessage, LlmClient, OutreachEmail, Policy, inject};
-use crate::memory::{EntityRef, MemoryClient, digest};
+use crate::memory::{EntityRef, MemoryClient};
 use crate::workflows::outreach::{OutreachError, render_html};
 
 const MEMORY_DIGEST_TOKENS: usize = 250;
@@ -48,15 +48,23 @@ pub async fn generate_email(
     };
     let account_memory = match contact.company_domain.as_deref() {
         Some(domain) => {
-            best_effort_digest(memory, &EntityRef::company(domain), "research angles signals", 20).await
+            crate::workflows::util::best_effort_digest(
+                memory,
+                &EntityRef::company(domain),
+                "research angles signals",
+                20,
+                MEMORY_DIGEST_TOKENS,
+            )
+            .await
         }
         None => String::new(),
     };
-    let contact_memory = best_effort_digest(
+    let contact_memory = crate::workflows::util::best_effort_digest(
         memory,
         &EntityRef::Contact(contact.id),
         "enrichment replies history",
         10,
+        MEMORY_DIGEST_TOKENS,
     )
     .await;
     let prior_engagements = db::engagements::for_contact(pool, contact.id, 20).await?;
@@ -114,16 +122,6 @@ pub async fn generate_email(
         last_draft = draft.body;
     }
     Err(OutreachError::RulesViolated(last_violations))
-}
-
-async fn best_effort_digest(memory: &MemoryClient, entity: &EntityRef, query: &str, limit: usize) -> String {
-    match memory.recall(query, Some(entity), limit).await {
-        Ok(items) => digest(&items, MEMORY_DIGEST_TOKENS),
-        Err(e) => {
-            tracing::warn!(entity = %entity, error = %e, "memory recall unavailable for generation");
-            String::new()
-        }
-    }
 }
 
 fn describe_violation(violation: &crate::config::MessagingViolation) -> String {

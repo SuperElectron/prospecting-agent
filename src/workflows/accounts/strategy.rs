@@ -7,7 +7,7 @@ use crate::domain::{
     FLAG_NEW_CONTACT_ADVANCED, Signal,
 };
 use crate::llm::{AccountAssessment, ChatMessage, LlmClient, Policy, inject};
-use crate::memory::{EntityRef, MemoryClient, digest};
+use crate::memory::{EntityRef, MemoryClient};
 use crate::workflows::accounts::AccountError;
 
 const MEMORY_DIGEST_TOKENS: usize = 300;
@@ -26,13 +26,14 @@ pub async fn evaluate_account_strategy(
     let contacts = db::contacts::list_by_company_domain(pool, &domain).await?;
     let signals = db::signals::for_domain(pool, &domain, 10).await?;
     let entity = EntityRef::company(&domain);
-    let memory_digest = match memory.recall("account history", Some(&entity), 20).await {
-        Ok(memories) => digest(&memories, MEMORY_DIGEST_TOKENS),
-        Err(e) => {
-            tracing::warn!(domain, error = %e, "memory recall unavailable for strategy");
-            String::new()
-        }
-    };
+    let memory_digest = crate::workflows::util::best_effort_digest(
+        memory,
+        &entity,
+        "account history",
+        20,
+        MEMORY_DIGEST_TOKENS,
+    )
+    .await;
     let prompt = assessment_prompt(
         &domain,
         company.summary.as_deref(),
@@ -61,9 +62,7 @@ pub async fn evaluate_account_strategy(
         "[STRATEGY] stage {:?}, health {:?}: {}",
         strategy.stage, strategy.health, strategy.summary
     );
-    if let Err(e) = memory.memorize(&entity, &line, false).await {
-        tracing::warn!(domain, error = %e, "strategy memorize failed");
-    }
+    crate::workflows::util::best_effort_memorize(memory, &entity, &line).await;
     Ok(strategy)
 }
 

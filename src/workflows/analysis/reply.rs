@@ -71,12 +71,7 @@ pub async fn analyze_reply<N: Notifier>(
         intent = classification.intent,
         summary = classification.summary,
     );
-    if let Err(e) = memory
-        .memorize(&EntityRef::Contact(contact.id), &line, false)
-        .await
-    {
-        tracing::warn!(contact = %contact.id, error = %e, "reply memorize failed");
-    }
+    crate::workflows::util::best_effort_memorize(memory, &EntityRef::Contact(contact.id), &line).await;
     let mut rep_notified = false;
     if classification.notify_rep {
         let message = format!(
@@ -137,14 +132,7 @@ fn classification_prompt(contact: &Contact, subject: Option<&str>, body: &str) -
 }
 
 fn truncate(raw: &str, limit: usize) -> String {
-    if raw.len() <= limit {
-        return raw.to_string();
-    }
-    let mut cut = limit;
-    while !raw.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    raw[..cut].to_string()
+    crate::workflows::util::truncate_on_boundary(raw, limit).to_string()
 }
 
 #[cfg(test)]
