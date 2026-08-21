@@ -1,4 +1,7 @@
+mod common;
+
 use chrono::{Duration, Utc};
+use common::cross_process_sweep_lock;
 use prospecting_agent::config::AppConfig;
 use prospecting_agent::db;
 use prospecting_agent::domain::{AgentTask, TaskKind, TaskStatus};
@@ -21,8 +24,6 @@ fn test_config(database_url: &str) -> AppConfig {
     AppConfig::from_map(&env).expect("test config parses")
 }
 
-static EXEC_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 async fn test_ctx() -> Option<JobContext> {
     let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
         assert!(
@@ -40,7 +41,7 @@ async fn test_ctx() -> Option<JobContext> {
 #[tokio::test]
 async fn notify_task_completes_and_future_tasks_stay_queued() {
     let Some(ctx) = test_ctx().await else { return };
-    let _exec = EXEC_LOCK.lock().await;
+    let _exec = cross_process_sweep_lock().await;
     let mut due_now = AgentTask::new(TaskKind::NotifyRep, serde_json::json!({"message": "ping"}));
     due_now.due_at = None;
     db::tasks::insert(&ctx.pool, &due_now).await.unwrap();
@@ -61,7 +62,7 @@ async fn notify_task_completes_and_future_tasks_stay_queued() {
 #[tokio::test]
 async fn unsupported_kinds_are_skipped_not_failed() {
     let Some(ctx) = test_ctx().await else { return };
-    let _exec = EXEC_LOCK.lock().await;
+    let _exec = cross_process_sweep_lock().await;
     let task = AgentTask::new(TaskKind::SyncCrm, serde_json::json!({}));
     db::tasks::insert(&ctx.pool, &task).await.unwrap();
     prospecting_agent::jobs::tasks::execute_due(&ctx).await.unwrap();
@@ -72,7 +73,7 @@ async fn unsupported_kinds_are_skipped_not_failed() {
 #[tokio::test]
 async fn failing_task_retries_then_fails_permanently() {
     let Some(ctx) = test_ctx().await else { return };
-    let _exec = EXEC_LOCK.lock().await;
+    let _exec = cross_process_sweep_lock().await;
     let mut task = AgentTask::new(TaskKind::ResearchCompany, serde_json::json!({}));
     task.company_domain = Some(format!("missing-{}.example.com", uuid::Uuid::new_v4().simple()));
     db::tasks::insert(&ctx.pool, &task).await.unwrap();
@@ -95,7 +96,7 @@ async fn failing_task_retries_then_fails_permanently() {
 #[tokio::test]
 async fn stale_running_tasks_are_reclaimed_and_concurrent_claims_stay_disjoint() {
     let Some(ctx) = test_ctx().await else { return };
-    let _exec = EXEC_LOCK.lock().await;
+    let _exec = cross_process_sweep_lock().await;
     let task = AgentTask::new(TaskKind::NotifyRep, serde_json::json!({"message": "stale"}));
     db::tasks::insert(&ctx.pool, &task).await.unwrap();
     let first = db::tasks::claim_due(&ctx.pool, Utc::now(), 100_000)
