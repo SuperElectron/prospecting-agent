@@ -348,6 +348,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn html_interstitial_with_status_200_is_a_decode_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/people/match"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html>blocked</html>"))
+            .mount(&server)
+            .await;
+        let err = client(&server).match_person("j@a.io").await.unwrap_err();
+        assert!(matches!(err, ApolloError::Decode(_)));
+    }
+
+    #[tokio::test]
     async fn client_errors_are_typed_and_not_retried() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
