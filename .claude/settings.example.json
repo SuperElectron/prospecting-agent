@@ -1,0 +1,16 @@
+{
+  "$comment": "Copy to .claude/settings.local.json (gitignored) and fill in real values. Never commit real keys.",
+  "env": {
+    "GITHUB_TOKEN": "ghp_your_github_pat_here",
+    "APOLLO_API_KEY": "your_apollo_key",
+    "TAVILY_API_KEY": "your_tavily_key",
+    "HUBSPOT_ACCESS_TOKEN": "your_hubspot_private_app_token",
+    "SENDGRID_API_KEY": "your_sendgrid_key",
+    "HEYREACH_API_KEY": "your_heyreach_key",
+    "SLACK_WEBHOOK_URL": "https://hooks.slack.com/services/xxx",
+    "LLM_BASE_URL": "http://dgx-spark.local:8000/v1",
+    "LLM_MODEL": "gpt-oss-120b",
+    "MEM0_URL": "http://localhost:8888",
+    "DATABASE_URL": "postgres://postgres:postgres@localhost:5432/prospecting"
+  }
+}
