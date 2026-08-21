@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.0.0 — MVP (2026-08-21)
+
+The complete local-first prospecting loop, reviewed and live-verified at every milestone: CSV or Apollo in, researched and personalized email out, replies analyzed and acted on, all unattended.
+
+### Added
+- End-to-end suite driving the full funnel through real job dispatch against mocked externals, hermetic across repeated and concurrent runs (cross-process advisory lock, per-run capacity keys)
+- Configuration for everything that drives unattended spend or sending: targeting titles and seniority, discovery budgets, preflight knobs, cadence with send-window overrides, one shared daily Apollo credit cap
+- Atomic write-ahead credit reservation: concurrent processes serialize on the ledger row; failures over-count instead of blowing the cap; midnight-spanning runs settle on the day they drew from
+- Operator and contributor docs: setup, architecture (prose + diagram), operations runbook, CONTRIBUTING, and an agent skill for driving the control API
+- Credential files written owner-only (0600)
+
+### Post-1.0 (tracked)
+- Slack notifier (M6), HubSpot sync (M6), HeyReach/LinkedIn (M6), jentic-one credential broker (M7, per the wiki Development-Plan), managed Mem0 (M8)
+- Full-body reply fetch before trusting opt-out classification (#54); injectable job clock + send-pass scoping (#62); preflight Modify reachability (#51); enrichment cooldown asymmetry (#49)
+
+
 ## v0.4.0 — M4 Jobs & Runtime (2026-08-21)
 
 The prospecting loop runs itself: a Postgres-backed job queue, twelve scheduled jobs, a local control API, and every workflow wired into unattended operation.

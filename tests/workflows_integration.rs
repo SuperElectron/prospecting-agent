@@ -1,3 +1,6 @@
+mod common;
+
+use common::cross_process_sweep_lock;
 use std::fmt::Write;
 
 use prospecting_agent::config::MemoryConfig;
@@ -39,8 +42,6 @@ fn memory_client(server: &MockServer) -> MemoryClient {
         user: "prospecting".into(),
     })
 }
-
-static SWEEP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn mount_memorize_ok(server: &MockServer) {
     Mock::given(method("POST"))
@@ -441,7 +442,7 @@ async fn discovery_stops_when_the_credit_budget_runs_out() {
 #[tokio::test]
 async fn contact_enrichment_marks_new_contacts_enriched() {
     let pool = require_pool!();
-    let _sweep = SWEEP_LOCK.lock().await;
+    let _sweep = cross_process_sweep_lock().await;
     let apollo_server = MockServer::start().await;
     let memory_server = MockServer::start().await;
     mount_memorize_ok(&memory_server).await;
@@ -594,7 +595,7 @@ async fn locked_placeholder_email_counts_as_no_email_and_lands_nothing() {
 #[tokio::test]
 async fn company_enrichment_preserves_scoring_state() {
     let pool = require_pool!();
-    let _sweep = SWEEP_LOCK.lock().await;
+    let _sweep = cross_process_sweep_lock().await;
     let apollo_server = MockServer::start().await;
     let memory_server = MockServer::start().await;
     mount_memorize_ok(&memory_server).await;
@@ -1542,7 +1543,7 @@ async fn weekly_report_counts_recent_activity() {
 #[tokio::test]
 async fn company_enrichment_failure_still_marks_the_attempt() {
     let pool = require_pool!();
-    let _sweep = SWEEP_LOCK.lock().await;
+    let _sweep = cross_process_sweep_lock().await;
     let apollo_server = MockServer::start().await;
     let memory_server = MockServer::start().await;
     mount_memorize_ok(&memory_server).await;
@@ -1579,7 +1580,7 @@ async fn company_enrichment_failure_still_marks_the_attempt() {
 #[tokio::test]
 async fn contact_enrichment_error_leaves_the_contact_new_and_counts_the_failure() {
     let pool = require_pool!();
-    let _sweep = SWEEP_LOCK.lock().await;
+    let _sweep = cross_process_sweep_lock().await;
     let apollo_server = MockServer::start().await;
     let memory_server = MockServer::start().await;
     mount_memorize_ok(&memory_server).await;

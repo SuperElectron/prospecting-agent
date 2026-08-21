@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 use crate::clients::{ApolloClient, TavilyClient};
-use crate::config::{AppConfig, IcpCriteria};
+use crate::config::AppConfig;
 use crate::connectors::gmail::{GmailConnector, OauthClient, load_senders};
 use crate::connectors::health::{DbProbe, HealthInputs, HealthReport, run_health_check};
 use crate::connectors::{LogNotifier, Notifier, NotifyLevel};
@@ -166,6 +166,32 @@ impl JobContext {
 
 pub const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
+pub struct CreditReservation {
+    pub day: chrono::NaiveDate,
+    pub granted: u16,
+    pub capped: bool,
+}
+
+pub async fn reserve_apollo_credits(ctx: &JobContext, want: u16) -> Result<CreditReservation, JobError> {
+    let day = chrono::Utc::now().date_naive();
+    let cap = ctx.config.apollo_daily_credit_cap;
+    let granted = crate::db::apollo_ledger::reserve(&ctx.pool, day, want, cap).await?;
+    let capped = granted < want;
+    if capped {
+        tracing::warn!(want, granted, cap, "apollo daily credit cap limiting this run");
+    }
+    Ok(CreditReservation { day, granted, capped })
+}
+
+pub async fn settle_apollo_credits(
+    ctx: &JobContext,
+    reservation: &CreditReservation,
+    left: u16,
+) -> Result<(), JobError> {
+    crate::db::apollo_ledger::refund(&ctx.pool, reservation.day, left).await?;
+    Ok(())
+}
+
 const RESEARCH_BATCH: i64 = 3;
 const DISCOVER_BATCH: i64 = 5;
 const ENROLL_LIMIT: i64 = 50;
@@ -197,23 +223,31 @@ pub async fn run_job(ctx: &JobContext, kind: JobKind) -> Result<serde_json::Valu
         }
         JobKind::DiscoverContacts => discover_batch(ctx).await,
         JobKind::EnrichContacts => {
-            let mut credits = ENRICH_CREDITS;
+            let reservation = reserve_apollo_credits(ctx, ENRICH_CREDITS).await?;
+            let mut credits = reservation.granted;
             let report =
                 discovery::enrich_contacts(&ctx.pool, &ctx.memory, &ctx.apollo, ENRICH_LIMIT, &mut credits)
                     .await?;
-            Ok(serde_json::to_value(report)?)
+            settle_apollo_credits(ctx, &reservation, credits).await?;
+            Ok(serde_json::json!({
+                "credit_capped": reservation.capped,
+                "report": serde_json::to_value(report)?,
+            }))
         }
         JobKind::EnrichCompanies => {
-            let mut credits = ENRICH_CREDITS;
+            let reservation = reserve_apollo_credits(ctx, ENRICH_CREDITS).await?;
+            let mut credits = reservation.granted;
             let report =
                 discovery::enrich_companies(&ctx.pool, &ctx.memory, &ctx.apollo, ENRICH_LIMIT, &mut credits)
                     .await?;
-            Ok(serde_json::to_value(report)?)
+            settle_apollo_credits(ctx, &reservation, credits).await?;
+            Ok(serde_json::json!({
+                "credit_capped": reservation.capped,
+                "report": serde_json::to_value(report)?,
+            }))
         }
         JobKind::OutreachSequence => {
-            let report =
-                outreach::enroll_contacts(&ctx.pool, &crate::config::Cadence::standard(), ENROLL_LIMIT)
-                    .await?;
+            let report = outreach::enroll_contacts(&ctx.pool, &ctx.config.cadence, ENROLL_LIMIT).await?;
             Ok(serde_json::to_value(report)?)
         }
         JobKind::OutreachSend => {
@@ -222,7 +256,7 @@ pub async fn run_job(ctx: &JobContext, kind: JobKind) -> Result<serde_json::Valu
                 llm: &ctx.llm,
                 policies: &ctx.policies,
                 rules: &crate::config::MessagingRules::default(),
-                preflight_config: &crate::workflows::accounts::PreflightConfig::default(),
+                preflight_config: &ctx.config.preflight,
                 transport: ctx.gmail.as_ref(),
                 dry_run: ctx.config.dry_run,
                 limit: SEND_LIMIT,
@@ -267,9 +301,10 @@ async fn activity_report(
 
 async fn discover_batch(ctx: &JobContext) -> Result<serde_json::Value, JobError> {
     let candidates = companies::list_without_contacts(&ctx.pool, DISCOVER_BATCH).await?;
-    let icp = IcpCriteria::default();
-    let budget = discovery::DiscoveryBudget::default();
-    let mut credits = budget.max_credits_per_run;
+    let icp = &ctx.config.targeting;
+    let budget = ctx.config.discovery;
+    let reservation = reserve_apollo_credits(ctx, budget.max_credits_per_run).await?;
+    let mut credits = reservation.granted;
     let mut attempted: Vec<String> = Vec::new();
     let mut searches_failed = 0usize;
     let mut total = discovery::DiscoveryReport::default();
@@ -281,7 +316,7 @@ async fn discover_batch(ctx: &JobContext) -> Result<serde_json::Value, JobError>
             &ctx.pool,
             &ctx.memory,
             &ctx.apollo,
-            &icp,
+            icp,
             &company.domain,
             &budget,
             &mut credits,
@@ -296,6 +331,7 @@ async fn discover_batch(ctx: &JobContext) -> Result<serde_json::Value, JobError>
         total.absorb(&report);
         attempted.push(company.domain);
     }
+    settle_apollo_credits(ctx, &reservation, credits).await?;
     if !attempted.is_empty() && searches_failed == attempted.len() {
         return Err(JobError::DiscoveryUnavailable {
             attempted: attempted.len(),
@@ -303,6 +339,7 @@ async fn discover_batch(ctx: &JobContext) -> Result<serde_json::Value, JobError>
     }
     Ok(serde_json::json!({
         "attempted": attempted,
+        "credit_capped": reservation.capped,
         "report": serde_json::to_value(total)?,
     }))
 }

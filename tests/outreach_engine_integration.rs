@@ -1,3 +1,6 @@
+mod common;
+
+use common::cross_process_sweep_lock;
 use std::sync::Mutex;
 
 use chrono::{TimeZone, Utc};
@@ -23,8 +26,6 @@ async fn test_pool() -> Option<sqlx::PgPool> {
     db::migrate(&pool).await.expect("run migrations");
     Some(pool)
 }
-
-static SWEEP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 macro_rules! require_pool {
     () => {
@@ -149,7 +150,7 @@ fn inputs<'a, T: EmailTransport>(
 #[tokio::test]
 async fn enrollment_starts_sequences_only_for_contactable_enriched_contacts() {
     let pool = require_pool!();
-    let _sweep = SWEEP_LOCK.lock().await;
+    let _sweep = cross_process_sweep_lock().await;
     let enriched = seed_contact(&pool, ContactStatus::Enriched).await;
     let opted_out = seed_contact(&pool, ContactStatus::OptedOut).await;
     let cadence = Cadence::standard();
@@ -182,7 +183,7 @@ async fn enrollment_starts_sequences_only_for_contactable_enriched_contacts() {
 #[tokio::test]
 async fn send_pass_sends_records_and_advances_inside_the_window() {
     let pool = require_pool!();
-    let _sweep = SWEEP_LOCK.lock().await;
+    let _sweep = cross_process_sweep_lock().await;
     let llm_server = MockServer::start().await;
     let memory_server = MockServer::start().await;
     mount_llm_email(&llm_server).await;
@@ -234,7 +235,7 @@ async fn send_pass_sends_records_and_advances_inside_the_window() {
 #[tokio::test]
 async fn send_pass_outside_the_window_sends_nothing() {
     let pool = require_pool!();
-    let _sweep = SWEEP_LOCK.lock().await;
+    let _sweep = cross_process_sweep_lock().await;
     let llm_server = MockServer::start().await;
     let memory_server = MockServer::start().await;
     mount_llm_email(&llm_server).await;
@@ -285,7 +286,7 @@ async fn send_pass_outside_the_window_sends_nothing() {
 #[tokio::test]
 async fn dry_run_drafts_without_side_effects() {
     let pool = require_pool!();
-    let _sweep = SWEEP_LOCK.lock().await;
+    let _sweep = cross_process_sweep_lock().await;
     let llm_server = MockServer::start().await;
     let memory_server = MockServer::start().await;
     mount_llm_email(&llm_server).await;
@@ -323,7 +324,7 @@ async fn dry_run_drafts_without_side_effects() {
 #[tokio::test]
 async fn opted_out_contact_stops_the_sequence_before_any_send() {
     let pool = require_pool!();
-    let _sweep = SWEEP_LOCK.lock().await;
+    let _sweep = cross_process_sweep_lock().await;
     let llm_server = MockServer::start().await;
     let memory_server = MockServer::start().await;
     mount_llm_email(&llm_server).await;
@@ -373,7 +374,7 @@ async fn opted_out_contact_stops_the_sequence_before_any_send() {
 #[tokio::test]
 async fn follow_up_outside_the_window_waits_even_when_overdue() {
     let pool = require_pool!();
-    let _sweep = SWEEP_LOCK.lock().await;
+    let _sweep = cross_process_sweep_lock().await;
     let llm_server = MockServer::start().await;
     let memory_server = MockServer::start().await;
     mount_llm_email(&llm_server).await;
@@ -423,7 +424,7 @@ async fn follow_up_outside_the_window_waits_even_when_overdue() {
 #[tokio::test]
 async fn preflight_modify_caps_the_sequence_and_is_counted() {
     let pool = require_pool!();
-    let _sweep = SWEEP_LOCK.lock().await;
+    let _sweep = cross_process_sweep_lock().await;
     let llm_server = MockServer::start().await;
     let memory_server = MockServer::start().await;
     mount_llm_email(&llm_server).await;
@@ -478,7 +479,7 @@ async fn preflight_modify_caps_the_sequence_and_is_counted() {
 #[tokio::test]
 async fn failed_send_burns_the_slot_without_recording_an_engagement() {
     let pool = require_pool!();
-    let _sweep = SWEEP_LOCK.lock().await;
+    let _sweep = cross_process_sweep_lock().await;
     let llm_server = MockServer::start().await;
     let memory_server = MockServer::start().await;
     mount_llm_email(&llm_server).await;
@@ -525,7 +526,7 @@ async fn failed_send_burns_the_slot_without_recording_an_engagement() {
 #[tokio::test]
 async fn final_step_send_failure_is_not_recorded_as_a_completion() {
     let pool = require_pool!();
-    let _sweep = SWEEP_LOCK.lock().await;
+    let _sweep = cross_process_sweep_lock().await;
     let llm_server = MockServer::start().await;
     let memory_server = MockServer::start().await;
     mount_llm_email(&llm_server).await;

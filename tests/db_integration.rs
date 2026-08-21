@@ -481,3 +481,27 @@ async fn email_dedupe_migration_collapses_multiple_loser_sequence_states() {
 
     tx.rollback().await.unwrap();
 }
+
+#[tokio::test]
+async fn apollo_ledger_reserves_atomically_and_refunds() {
+    let pool = require_pool!();
+    let day = chrono::NaiveDate::from_ymd_opt(1999, 1, 2).unwrap();
+    sqlx::query("DELETE FROM apollo_spend WHERE day = $1")
+        .bind(day)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let first = db::apollo_ledger::reserve(&pool, day, 10, 12).await.unwrap();
+    assert_eq!(first, 10);
+    let second = db::apollo_ledger::reserve(&pool, day, 10, 12).await.unwrap();
+    assert_eq!(second, 2);
+    let third = db::apollo_ledger::reserve(&pool, day, 10, 12).await.unwrap();
+    assert_eq!(third, 0);
+    db::apollo_ledger::refund(&pool, day, 4).await.unwrap();
+    assert_eq!(db::apollo_ledger::spent_on(&pool, day).await.unwrap(), 8);
+    let (a, b) = tokio::join!(
+        db::apollo_ledger::reserve(&pool, day, 3, 12),
+        db::apollo_ledger::reserve(&pool, day, 3, 12),
+    );
+    assert_eq!(a.unwrap() + b.unwrap(), 4);
+}
