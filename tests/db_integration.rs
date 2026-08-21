@@ -405,3 +405,79 @@ async fn emails_normalize_on_write_and_lookup() {
     let by_mixed = db::contacts::by_email(&pool, &mixed).await.unwrap().unwrap();
     assert_eq!(by_mixed.id, by_clean.id);
 }
+
+#[tokio::test]
+async fn email_dedupe_migration_collapses_multiple_loser_sequence_states() {
+    let pool = require_pool!();
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("DROP INDEX IF EXISTS contacts_email_unique")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let stamp = uuid::Uuid::new_v4().simple().to_string();
+    let base = format!("triple-{stamp}@acme.example.com");
+    let winner_id = uuid::Uuid::new_v4();
+    let loser_early = uuid::Uuid::new_v4();
+    let loser_late = uuid::Uuid::new_v4();
+    for (id, email, offset_secs, status) in [
+        (winner_id, base.clone(), 0.0f64, "in_sequence"),
+        (loser_early, base.to_uppercase(), 60.0, "in_sequence"),
+        (
+            loser_late,
+            format!("Triple-{stamp}@Acme.example.com"),
+            120.0,
+            "opted_out",
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO contacts (id, email, source, status, created_at, updated_at) \
+             VALUES ($1, $2, 'csv', $3, now() + make_interval(secs => $4), now())",
+        )
+        .bind(id)
+        .bind(email)
+        .bind(status)
+        .bind(offset_secs)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    }
+    for (contact_id, step) in [(loser_early, 1i16), (loser_late, 2i16)] {
+        sqlx::query(
+            "INSERT INTO sequence_states (contact_id, cadence, current_step, max_steps, stopped) \
+             VALUES ($1, 'standard', $2, 3, false)",
+        )
+        .bind(contact_id)
+        .bind(step)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    }
+
+    sqlx::raw_sql(include_str!("../migrations/0011_email_normalization.sql"))
+        .execute(&mut *tx)
+        .await
+        .expect("migration must handle multiple losers with sequence state");
+
+    let survivors: Vec<uuid::Uuid> = sqlx::query_scalar("SELECT id FROM contacts WHERE lower(email) = $1")
+        .bind(base.to_lowercase())
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(survivors, vec![winner_id]);
+    let status: String = sqlx::query_scalar("SELECT status FROM contacts WHERE id = $1")
+        .bind(winner_id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(status, "opted_out");
+    let (state_owner, step): (uuid::Uuid, i16) =
+        sqlx::query_as("SELECT contact_id, current_step FROM sequence_states WHERE contact_id = $1")
+            .bind(winner_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(state_owner, winner_id);
+    assert_eq!(step, 2);
+
+    tx.rollback().await.unwrap();
+}

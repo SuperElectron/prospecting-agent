@@ -40,6 +40,16 @@ USING email_case_merge m
 WHERE s.contact_id = m.loser_id
   AND EXISTS (SELECT 1 FROM sequence_states w WHERE w.contact_id = m.winner_id);
 
+DELETE FROM sequence_states s
+USING email_case_merge m
+WHERE s.contact_id = m.loser_id
+  AND EXISTS (
+    SELECT 1 FROM sequence_states s2
+    JOIN email_case_merge m2 ON m2.loser_id = s2.contact_id
+    WHERE m2.winner_id = m.winner_id
+      AND (s2.current_step, s2.contact_id) > (s.current_step, s.contact_id)
+  );
+
 UPDATE sequence_states s
 SET contact_id = m.winner_id
 FROM email_case_merge m
@@ -66,4 +76,4 @@ SET email = lower(btrim(email))
 WHERE email IS NOT NULL AND email <> lower(btrim(email));
 
 DROP INDEX IF EXISTS contacts_email_unique;
-CREATE UNIQUE INDEX contacts_email_unique ON contacts (lower(email)) WHERE email IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS contacts_email_unique ON contacts (lower(email)) WHERE email IS NOT NULL;
