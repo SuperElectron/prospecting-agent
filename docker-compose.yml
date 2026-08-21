@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-prospecting}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mem0:
+    image: mem0ai/mem0-api-server:latest
+    environment:
+      OPENAI_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:8000/v1}
+      OPENAI_API_KEY: ${LLM_API_KEY:-local}
+      MEM0_LLM_MODEL: ${LLM_MODEL:-gpt-oss-120b}
+    ports:
+      - "8888:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
