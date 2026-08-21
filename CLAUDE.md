@@ -1,5 +1,11 @@
 # prospecting-agent — project rules
 
+## First-time setup (fresh clone)
+If `.cache/rust-best-practices/` or `.env` is missing, this is a fresh clone — run `./scripts/setup.sh`
+before any other work. It clones the Rust review reference into `.cache/`, creates `.env` and
+`.claude/settings.local.json` from their examples, starts Postgres via docker compose, and runs
+build + tests. Then remind the user to fill in API keys.
+
 ## GitHub issues
 Every issue created in this repo MUST use this body structure, in this order:
 
@@ -31,6 +37,12 @@ never close an issue with unchecked boxes for work that was done.
   Canonical Rust standard via the `rust-review` skill (.claude/skills/rust-review/SKILL.md);
   full reference is the local clone at .cache/rust-best-practices (never fetch the website).
 - Milestones tagged v0.1.0…v1.0.0 on main, CHANGELOG entry each.
+- Milestone review: before each staging → main PR, run a dedicated review sweep of the full
+  staging-vs-main diff against the rust-review standard; land findings as a `refactor:` commit
+  before merging and tagging.
+- For large milestones (M4/M5 especially), prompt the user to run `/code-review ultra` — the
+  multi-agent cloud review of the branch. It is user-triggered and billed; Claude cannot launch
+  it. Suggest it at the milestone boundary, then apply its findings like any review.
 
 ## Code rules
 - No code comments. Keep files small — aim under 400 lines, ~500 is a guideline not a hard cap; when a file grows, split it into smaller parts. I/O behind traits. thiserror per module.
