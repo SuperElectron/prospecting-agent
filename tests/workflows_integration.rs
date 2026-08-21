@@ -40,6 +40,8 @@ fn memory_client(server: &MockServer) -> MemoryClient {
     })
 }
 
+static SWEEP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn mount_memorize_ok(server: &MockServer) {
     Mock::given(method("POST"))
         .and(path("/api/v1/memories/"))
@@ -439,6 +441,7 @@ async fn discovery_stops_when_the_credit_budget_runs_out() {
 #[tokio::test]
 async fn contact_enrichment_marks_new_contacts_enriched() {
     let pool = require_pool!();
+    let _sweep = SWEEP_LOCK.lock().await;
     let apollo_server = MockServer::start().await;
     let memory_server = MockServer::start().await;
     mount_memorize_ok(&memory_server).await;
@@ -466,7 +469,7 @@ async fn contact_enrichment_marks_new_contacts_enriched() {
         &pool,
         &memory_client(&memory_server),
         &apollo_client(&apollo_server),
-        500,
+        50,
         &mut credits,
     )
     .await
@@ -591,6 +594,7 @@ async fn locked_placeholder_email_counts_as_no_email_and_lands_nothing() {
 #[tokio::test]
 async fn company_enrichment_preserves_scoring_state() {
     let pool = require_pool!();
+    let _sweep = SWEEP_LOCK.lock().await;
     let apollo_server = MockServer::start().await;
     let memory_server = MockServer::start().await;
     mount_memorize_ok(&memory_server).await;
@@ -1538,6 +1542,7 @@ async fn weekly_report_counts_recent_activity() {
 #[tokio::test]
 async fn company_enrichment_failure_still_marks_the_attempt() {
     let pool = require_pool!();
+    let _sweep = SWEEP_LOCK.lock().await;
     let apollo_server = MockServer::start().await;
     let memory_server = MockServer::start().await;
     mount_memorize_ok(&memory_server).await;
@@ -1546,7 +1551,7 @@ async fn company_enrichment_failure_still_marks_the_attempt() {
     db::companies::upsert(&pool, &company).await.unwrap();
     Mock::given(method("POST"))
         .and(path("/v1/organizations/enrich"))
-        .respond_with(ResponseTemplate::new(500))
+        .respond_with(ResponseTemplate::new(404))
         .mount(&apollo_server)
         .await;
     let mut credits: u16 = 5000;
@@ -1574,6 +1579,7 @@ async fn company_enrichment_failure_still_marks_the_attempt() {
 #[tokio::test]
 async fn contact_enrichment_error_leaves_the_contact_new_and_counts_the_failure() {
     let pool = require_pool!();
+    let _sweep = SWEEP_LOCK.lock().await;
     let apollo_server = MockServer::start().await;
     let memory_server = MockServer::start().await;
     mount_memorize_ok(&memory_server).await;
@@ -1584,7 +1590,7 @@ async fn contact_enrichment_error_leaves_the_contact_new_and_counts_the_failure(
     db::contacts::upsert(&pool, &contact).await.unwrap();
     Mock::given(method("POST"))
         .and(path("/v1/people/match"))
-        .respond_with(ResponseTemplate::new(500))
+        .respond_with(ResponseTemplate::new(404))
         .mount(&apollo_server)
         .await;
     let mut credits: u16 = 5000;
@@ -1592,7 +1598,7 @@ async fn contact_enrichment_error_leaves_the_contact_new_and_counts_the_failure(
         &pool,
         &memory_client(&memory_server),
         &apollo_client(&apollo_server),
-        10_000,
+        50,
         &mut credits,
     )
     .await

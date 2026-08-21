@@ -1,36 +1,22 @@
+use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
-use crate::connectors::gmail::OauthClient;
-use crate::connectors::health::{DbProbe, HealthInputs, run_health_check};
+use crate::connectors::CheckStatus;
+use crate::db::{contacts, engagements, sequences, strategies};
 use crate::http::AppState;
-use crate::jobs::{JOB_NAMES, run_job};
+use crate::jobs::{self, JobError, JobKind, runtime};
+use crate::workflows::reporting;
+
+const RUN_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let ctx = &state.ctx;
-    let senders = ctx
-        .gmail
-        .as_ref()
-        .map(|g| g.senders().to_vec())
-        .unwrap_or_default();
-    let oauth = ctx
-        .config
-        .email
-        .gmail
-        .as_ref()
-        .and_then(|g| OauthClient::from_file(&g.client_file).ok());
-    let report = run_health_check(&HealthInputs {
-        db: DbProbe::Pool(&ctx.pool),
-        llm_base_url: Some(&ctx.config.llm.base_url),
-        memory_base_url: Some(&ctx.config.memory.base_url),
-        gmail: oauth.as_ref(),
-        senders: &senders,
-    })
-    .await;
-    let status = if report.status == crate::connectors::CheckStatus::Error {
+    let report = jobs::health_report(&state.ctx).await;
+    let status = if report.status == CheckStatus::Error {
         StatusCode::SERVICE_UNAVAILABLE
     } else {
         StatusCode::OK
@@ -39,37 +25,51 @@ pub async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let names: Vec<&str> = JobKind::ALL.iter().map(|kind| kind.as_str()).collect();
     axum::Json(serde_json::json!({
-        "jobs": JOB_NAMES,
+        "jobs": names,
         "webhooks": state.webhooks.names(),
     }))
 }
 
 pub async fn run_job_now(State(state): State<Arc<AppState>>, Path(name): Path<String>) -> impl IntoResponse {
-    match run_job(&state.ctx, &name).await {
-        Ok(report) => (StatusCode::OK, axum::Json(report)),
-        Err(crate::jobs::JobError::Unknown(name)) => (
-            StatusCode::NOT_FOUND,
-            axum::Json(serde_json::json!({"error": format!("unknown job {name}")})),
-        ),
-        Err(e) => (
+    let Ok(kind) = JobKind::from_str(&name) else {
+        return unknown_job(&name);
+    };
+    {
+        let mut running = state.running.lock().await;
+        if !running.insert(kind) {
+            return (
+                StatusCode::CONFLICT,
+                axum::Json(serde_json::json!({"error": format!("job {kind} is already running")})),
+            );
+        }
+    }
+    let outcome = tokio::time::timeout(RUN_TIMEOUT, jobs::run_job(&state.ctx, kind)).await;
+    state.running.lock().await.remove(&kind);
+    match outcome {
+        Ok(Ok(report)) => (StatusCode::OK, axum::Json(report)),
+        Ok(Err(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             axum::Json(serde_json::json!({"error": e.to_string()})),
+        ),
+        Err(_) => (
+            StatusCode::GATEWAY_TIMEOUT,
+            axum::Json(serde_json::json!({
+                "error": format!("job {kind} timed out after {}s", RUN_TIMEOUT.as_secs())
+            })),
         ),
     }
 }
 
 pub async fn enqueue_job(State(state): State<Arc<AppState>>, Path(name): Path<String>) -> impl IntoResponse {
-    if !JOB_NAMES.contains(&name.as_str()) {
-        return (
-            StatusCode::NOT_FOUND,
-            axum::Json(serde_json::json!({"error": format!("unknown job {name}")})),
-        );
-    }
-    match crate::jobs::runtime::enqueue(state.ctx.config.database_url.expose(), &name).await {
+    let Ok(kind) = JobKind::from_str(&name) else {
+        return unknown_job(&name);
+    };
+    match runtime::enqueue(&state.queue, kind).await {
         Ok(()) => (
             StatusCode::ACCEPTED,
-            axum::Json(serde_json::json!({"enqueued": name})),
+            axum::Json(serde_json::json!({"enqueued": kind.as_str()})),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -79,7 +79,7 @@ pub async fn enqueue_job(State(state): State<Arc<AppState>>, Path(name): Path<St
 }
 
 pub async fn report(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match crate::workflows::reporting::weekly_report(&state.ctx.pool, 7).await {
+    match reporting::weekly_report(&state.ctx.pool, 7).await {
         Ok(report) => (StatusCode::OK, axum::Json(serde_json::json!(report))),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -93,7 +93,7 @@ pub async fn contact_lookup(
     Path(email): Path<String>,
 ) -> impl IntoResponse {
     let pool = &state.ctx.pool;
-    let contact = match crate::db::contacts::by_email(pool, &email).await {
+    let contact = match contacts::by_email(pool, &email).await {
         Ok(Some(contact)) => contact,
         Ok(None) => {
             return (
@@ -108,18 +108,12 @@ pub async fn contact_lookup(
             );
         }
     };
-    let engagements = crate::db::engagements::for_contact(pool, contact.id, 10)
+    let engagements = engagements::for_contact(pool, contact.id, 10)
         .await
         .unwrap_or_default();
-    let sequence = crate::db::sequences::for_contact(pool, contact.id)
-        .await
-        .ok()
-        .flatten();
+    let sequence = sequences::for_contact(pool, contact.id).await.ok().flatten();
     let strategy = match contact.company_domain.as_deref() {
-        Some(domain) => crate::db::strategies::by_domain(pool, domain)
-            .await
-            .ok()
-            .flatten(),
+        Some(domain) => strategies::by_domain(pool, domain).await.ok().flatten(),
         None => None,
     };
     (
@@ -130,5 +124,13 @@ pub async fn contact_lookup(
             "sequence": sequence,
             "strategy": strategy,
         })),
+    )
+}
+
+fn unknown_job(name: &str) -> (StatusCode, axum::Json<serde_json::Value>) {
+    let error = JobError::Unknown(name.to_string());
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(serde_json::json!({"error": error.to_string()})),
     )
 }

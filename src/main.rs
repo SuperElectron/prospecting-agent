@@ -133,10 +133,14 @@ async fn job_context() -> Result<prospecting_agent::jobs::JobContext, String> {
 
 async fn serve(port: u16) -> Result<(), String> {
     let ctx = job_context().await?;
-    let state = std::sync::Arc::new(prospecting_agent::http::AppState {
+    let queue = prospecting_agent::jobs::runtime::storage(ctx.config.database_url.expose())
+        .await
+        .map_err(|e| e.to_string())?;
+    let state = std::sync::Arc::new(prospecting_agent::http::AppState::new(
         ctx,
-        webhooks: prospecting_agent::http::webhooks::WebhookRegistry::default(),
-    });
+        queue,
+        prospecting_agent::http::webhooks::WebhookRegistry::default(),
+    ));
     prospecting_agent::http::serve(state, port)
         .await
         .map_err(|e| e.to_string())
@@ -150,15 +154,20 @@ async fn worker() -> Result<(), String> {
 }
 
 async fn job(name: &str, enqueue: bool) -> Result<(), String> {
+    use std::str::FromStr;
+    let kind = prospecting_agent::jobs::JobKind::from_str(name).map_err(|e| e.to_string())?;
     let ctx = job_context().await?;
     if enqueue {
-        prospecting_agent::jobs::runtime::enqueue(ctx.config.database_url.expose(), name)
+        let queue = prospecting_agent::jobs::runtime::storage(ctx.config.database_url.expose())
             .await
             .map_err(|e| e.to_string())?;
-        println!("enqueued {name}");
+        prospecting_agent::jobs::runtime::enqueue(&queue, kind)
+            .await
+            .map_err(|e| e.to_string())?;
+        println!("enqueued {kind}");
         return Ok(());
     }
-    let report = prospecting_agent::jobs::run_job(&ctx, name)
+    let report = prospecting_agent::jobs::run_job(&ctx, kind)
         .await
         .map_err(|e| e.to_string())?;
     let rendered = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;

@@ -7,7 +7,13 @@ use axum::response::IntoResponse;
 
 use crate::http::AppState;
 
-pub type WebhookResult = Result<serde_json::Value, String>;
+#[derive(Debug, thiserror::Error)]
+pub enum WebhookError {
+    #[error("{0}")]
+    Rejected(String),
+}
+
+pub type WebhookResult = Result<serde_json::Value, WebhookError>;
 
 type Handler = Arc<
     dyn Fn(Arc<AppState>, serde_json::Value) -> std::pin::Pin<Box<dyn Future<Output = WebhookResult> + Send>>
@@ -58,7 +64,7 @@ pub async fn dispatch(
         Ok(result) => (StatusCode::OK, axum::Json(result)),
         Err(reason) => (
             StatusCode::UNPROCESSABLE_ENTITY,
-            axum::Json(serde_json::json!({"error": reason})),
+            axum::Json(serde_json::json!({"error": reason.to_string()})),
         ),
     }
 }
