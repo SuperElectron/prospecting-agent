@@ -16,6 +16,8 @@ pub enum ConnectorError {
     Auth(String),
     #[error("no send capacity available across {senders} senders")]
     NoCapacity { senders: usize },
+    #[error("no gmail senders are authorized; run gmail-auth first")]
+    NoSenders,
     #[error("invalid recipient address: {0}")]
     InvalidRecipient(String),
     #[error("header {header} carried a line break")]
