@@ -135,7 +135,7 @@ async fn rig() -> Option<Rig> {
     });
     let oauth = OauthClient::new("cid", Secret::new("csec")).with_bases(&gmail.uri(), &gmail.uri());
     let sender = SenderAccount {
-        email: "sender@e2e.example.com".into(),
+        email: format!("sender-{stamp}@e2e.example.com"),
         name: "E2E Sender".into(),
         refresh_token: "rt-e2e".into(),
         daily_limit: 50,
