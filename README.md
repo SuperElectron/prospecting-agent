@@ -8,7 +8,7 @@ Built with a DGX Spark running gpt-oss-120B.
 
 ## Docs
 
-Setup, architecture, and guides live in [`docs/`](docs/).
+Architecture and development plan live in the [wiki](https://github.com/SuperElectron/prospecting-agent/wiki). Setup guides land in `docs/` as the build progresses.
 
 ## Status
 
@@ -16,4 +16,4 @@ Early development — not ready for production use yet.
 
 ## License
 
-MIT-0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+MIT-0 — see [LICENSE](LICENSE).
