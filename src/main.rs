@@ -23,6 +23,10 @@ enum Command {
         daily_limit: i32,
     },
     Health,
+    SyncCsv {
+        #[arg(long)]
+        dir: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -32,6 +36,7 @@ async fn main() {
     let result = match args.command {
         Command::GmailAuth { daily_limit } => gmail_auth(daily_limit).await,
         Command::Health => health().await,
+        Command::SyncCsv { dir } => sync_csv(dir).await,
     };
     if let Err(message) = result {
         tracing::error!("{message}");
@@ -76,6 +81,22 @@ async fn health() -> Result<(), String> {
     if report.status == CheckStatus::Error {
         return Err("one or more health checks failed".into());
     }
+    Ok(())
+}
+
+async fn sync_csv(dir: Option<String>) -> Result<(), String> {
+    let config = AppConfig::from_env().map_err(|e| e.to_string())?;
+    let pool = db::connect(config.database_url.expose())
+        .await
+        .map_err(|e| e.to_string())?;
+    db::migrate(&pool).await.map_err(|e| e.to_string())?;
+    let memory = prospecting_agent::memory::MemoryClient::new(&config.memory);
+    let dir = dir.unwrap_or_else(|| config.csv_data_dir.clone());
+    let report = prospecting_agent::workflows::sync::sync_dir(&pool, &memory, &dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    let rendered = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+    println!("{rendered}");
     Ok(())
 }
 
