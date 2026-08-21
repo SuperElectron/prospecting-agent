@@ -24,9 +24,10 @@ impl Signal {
         strength: SignalStrength,
         summary: impl Into<String>,
     ) -> Self {
+        let raw_domain = company_domain.into();
         Self {
             id: Uuid::new_v4(),
-            company_domain: company_domain.into(),
+            company_domain: crate::domain::normalize_domain(&raw_domain),
             kind,
             strength,
             summary: summary.into(),

@@ -63,8 +63,14 @@ fn balanced_json_at(raw: &str, open: usize) -> Option<&str> {
 }
 
 pub fn parse_structured<T: DeserializeOwned>(raw: &str) -> Result<T, LlmError> {
-    let json = extract_json(raw).ok_or_else(|| LlmError::Parse("no JSON object found in output".into()))?;
-    serde_json::from_str(json).map_err(|e| LlmError::Parse(format!("{e}; extracted: {json}")))
+    let json = extract_json(raw).ok_or_else(|| LlmError::Parse {
+        reason: "no JSON object found in output".into(),
+        extracted: String::new(),
+    })?;
+    serde_json::from_str(json).map_err(|e| LlmError::Parse {
+        reason: e.to_string(),
+        extracted: json.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -137,5 +143,11 @@ mod tests {
     fn wrong_shape_reports_serde_error() {
         let r: Result<Sample, _> = parse_structured(r#"{"unexpected": true}"#);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn truncated_json_is_a_parse_error_not_a_panic() {
+        let r: Result<Sample, _> = parse_structured(r#"{"subject": "hi", "sco"#);
+        assert!(matches!(r, Err(LlmError::Parse { .. })));
     }
 }

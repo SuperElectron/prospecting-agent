@@ -26,23 +26,23 @@ fn from_row(row: &PgRow) -> Result<Engagement, DbError> {
     })
 }
 
-pub async fn insert(pool: &PgPool, e: &Engagement) -> Result<(), DbError> {
-    sqlx::query(
+pub async fn insert(pool: &PgPool, engagement: &Engagement) -> Result<bool, DbError> {
+    let result = sqlx::query(
         "INSERT INTO engagements (id, contact_id, channel, direction, kind, subject, body, \
          sequence_step, occurred_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING",
     )
-    .bind(e.id)
-    .bind(e.contact_id)
-    .bind(enum_to_str(&e.channel, "engagement.channel")?)
-    .bind(enum_to_str(&e.direction, "engagement.direction")?)
-    .bind(enum_to_str(&e.kind, "engagement.kind")?)
-    .bind(&e.subject)
-    .bind(&e.body)
-    .bind(e.sequence_step.map(i16::from))
-    .bind(e.occurred_at)
+    .bind(engagement.id)
+    .bind(engagement.contact_id)
+    .bind(enum_to_str(&engagement.channel, "engagement.channel")?)
+    .bind(enum_to_str(&engagement.direction, "engagement.direction")?)
+    .bind(enum_to_str(&engagement.kind, "engagement.kind")?)
+    .bind(&engagement.subject)
+    .bind(&engagement.body)
+    .bind(engagement.sequence_step.map(i16::from))
+    .bind(engagement.occurred_at)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(result.rows_affected() > 0)
 }
 
 pub async fn for_contact(pool: &PgPool, contact_id: Uuid, limit: i64) -> Result<Vec<Engagement>, DbError> {

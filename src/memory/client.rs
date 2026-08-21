@@ -3,7 +3,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::config::env::MemoryConfig;
+use crate::config::MemoryConfig;
 use crate::memory::entities::EntityRef;
 
 const REQUEST_TIMEOUT_SECS: u64 = 30;

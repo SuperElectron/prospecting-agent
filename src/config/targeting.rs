@@ -2,6 +2,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::Seniority;
 
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum TargetingError {
+    #[error("score weights must sum to 100, got {sum}")]
+    WeightsNotHundred { sum: u16 },
+    #[error("employee range is inverted: {min} > {max}")]
+    InvertedEmployeeRange { min: u32, max: u32 },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IcpCriteria {
     pub industries: Vec<String>,
@@ -21,12 +29,15 @@ pub struct ScoreWeights {
 }
 
 impl ScoreWeights {
-    pub fn is_valid(&self) -> bool {
+    fn sum(self) -> u16 {
         u16::from(self.icp_fit)
             + u16::from(self.buying_signals)
             + u16::from(self.engagement)
             + u16::from(self.champion_potential)
-            == 100
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.sum() == 100
     }
 }
 
@@ -42,12 +53,17 @@ impl Default for ScoreWeights {
 }
 
 impl IcpCriteria {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), TargetingError> {
         if !self.weights.is_valid() {
-            return Err("score weights must sum to 100".into());
+            return Err(TargetingError::WeightsNotHundred {
+                sum: self.weights.sum(),
+            });
         }
         if self.employee_range.0 > self.employee_range.1 {
-            return Err("employee range is inverted".into());
+            return Err(TargetingError::InvertedEmployeeRange {
+                min: self.employee_range.0,
+                max: self.employee_range.1,
+            });
         }
         Ok(())
     }
@@ -113,12 +129,18 @@ mod tests {
             },
             ..IcpCriteria::default()
         };
-        assert!(skewed.validate().is_err());
+        assert_eq!(
+            skewed.validate(),
+            Err(TargetingError::WeightsNotHundred { sum: 150 })
+        );
         let inverted = IcpCriteria {
             employee_range: (500, 20),
             ..IcpCriteria::default()
         };
-        assert!(inverted.validate().is_err());
+        assert_eq!(
+            inverted.validate(),
+            Err(TargetingError::InvertedEmployeeRange { min: 500, max: 20 })
+        );
     }
 
     #[test]

@@ -36,7 +36,8 @@ done
 
 echo "-- build + test"
 cargo build --quiet
-TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/prospecting" cargo test --quiet
+set -a; . ./.env; set +a
+TEST_DATABASE_URL="${DATABASE_URL:-postgres://postgres:postgres@localhost:5432/prospecting}" cargo test --quiet
 
 cat <<'EOF'
 == setup complete ==

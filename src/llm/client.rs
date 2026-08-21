@@ -2,8 +2,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::env::LlmConfig;
-use crate::config::secret::Secret;
+use crate::config::{LlmConfig, Secret};
 
 const MAX_ATTEMPTS: u32 = 3;
 const REQUEST_TIMEOUT_SECS: u64 = 120;
@@ -16,8 +15,8 @@ pub enum LlmError {
     Status { status: u16, body: String },
     #[error("llm response had no choices")]
     EmptyResponse,
-    #[error("llm output parse failure: {0}")]
-    Parse(String),
+    #[error("llm output parse failure: {reason}")]
+    Parse { reason: String, extracted: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -151,7 +150,6 @@ impl LlmClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::secret::Secret;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

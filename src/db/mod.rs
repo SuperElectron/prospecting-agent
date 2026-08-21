@@ -11,6 +11,8 @@ use serde::de::DeserializeOwned;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 
+pub use audit::{AuditEntry, PropertyChange};
+
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
     #[error("database error: {0}")]

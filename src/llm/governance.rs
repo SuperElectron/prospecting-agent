@@ -17,7 +17,7 @@ impl Policy {
             .split(|c: char| !c.is_alphanumeric())
             .filter(|w| !w.is_empty())
             .collect();
-        self.trigger_keywords.iter().any(|k| {
+        self.trigger_keywords.iter().filter(|k| !k.is_empty()).any(|k| {
             let keyword = k.to_lowercase();
             words.iter().any(|w| w.starts_with(keyword.as_str()))
         })

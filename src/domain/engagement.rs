@@ -129,6 +129,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn zero_max_steps_completes_immediately_on_advance() {
+        let mut s = SequenceState::start(Uuid::new_v4(), "empty", 0);
+        s.advance();
+        assert!(!s.is_active());
+        assert_eq!(s.stop_reason, Some(StopReason::Completed));
+        assert_eq!(s.current_step, 0);
+        assert!(s.last_sent_at.is_none());
+    }
+
+    #[test]
     fn sequence_advances_then_completes_at_max() {
         let mut s = SequenceState::start(Uuid::new_v4(), "default", 3);
         assert!(s.is_active());
