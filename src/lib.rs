@@ -7,3 +7,4 @@ pub mod domain;
 pub mod llm;
 pub mod memory;
 pub mod observability;
+pub mod workflows;

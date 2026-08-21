@@ -66,10 +66,7 @@ impl GmailConnector {
         page_token: Option<&str>,
     ) -> Result<MessagePage, ConnectorError> {
         let sender = self.sender_account(sender_email)?;
-        let token = self
-            .oauth()
-            .access_token(self.http(), &sender.refresh_token)
-            .await?;
+        let token = self.bearer_for(sender).await?;
         let url = format!("{}/gmail/v1/users/me/messages", self.api_base());
         let max = max_results.to_string();
         let mut params = vec![("q", query), ("maxResults", max.as_str())];
@@ -103,10 +100,7 @@ impl GmailConnector {
         message_id: &str,
     ) -> Result<InboundMessage, ConnectorError> {
         let sender = self.sender_account(sender_email)?;
-        let token = self
-            .oauth()
-            .access_token(self.http(), &sender.refresh_token)
-            .await?;
+        let token = self.bearer_for(sender).await?;
         let url = format!("{}/gmail/v1/users/me/messages/{message_id}", self.api_base());
         let resp = self
             .http()

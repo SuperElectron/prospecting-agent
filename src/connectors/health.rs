@@ -95,23 +95,43 @@ async fn check_gmail(
     senders: &[SenderAccount],
 ) -> Check {
     let start = Instant::now();
-    let (Some(oauth), Some(sender)) = (oauth, senders.first()) else {
+    let Some(oauth) = oauth else {
         return check(
             "gmail",
             CheckStatus::NotConfigured,
             start,
-            "no oauth client or authorized sender".into(),
+            "no oauth client configured".into(),
         );
     };
-    let http = reqwest::Client::new();
-    match oauth.access_token(&http, &sender.refresh_token).await {
-        Ok(_) => check(
+    if senders.is_empty() {
+        return check(
+            "gmail",
+            CheckStatus::NotConfigured,
+            start,
+            "no authorized senders".into(),
+        );
+    }
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .expect("static health client configuration is valid");
+    let mut failures = Vec::new();
+    for sender in senders {
+        if let Err(e) = oauth.access_token(&http, &sender.refresh_token).await {
+            failures.push(format!("{}: {e}", sender.email));
+        }
+    }
+    if failures.is_empty() {
+        check(
             "gmail",
             CheckStatus::Ok,
             start,
-            format!("token refresh ok for {}", sender.email),
-        ),
-        Err(e) => check("gmail", CheckStatus::Error, start, e.to_string()),
+            format!("token refresh ok for {} sender(s)", senders.len()),
+        )
+    } else if failures.len() == senders.len() {
+        check("gmail", CheckStatus::Error, start, failures.join("; "))
+    } else {
+        check("gmail", CheckStatus::Degraded, start, failures.join("; "))
     }
 }
 
@@ -170,7 +190,9 @@ async fn check_capacity(pool: Option<&PgPool>, senders: &[SenderAccount]) -> Che
         }
     }
     let remaining = (total_limit - total_sent).max(0);
-    let status = if total_limit > 0 && remaining * 5 < total_limit {
+    let status = if total_limit == 0 {
+        CheckStatus::NotConfigured
+    } else if remaining * 5 < total_limit {
         CheckStatus::Degraded
     } else {
         CheckStatus::Ok

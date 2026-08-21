@@ -80,7 +80,10 @@ pub fn encode_message(mime: &str) -> String {
 
 pub fn reply_subject(original: Option<&str>, generated: &str) -> String {
     let base = original.unwrap_or(generated);
-    if base.starts_with("Re: ") {
+    let already_reply = base
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("re:"));
+    if already_reply {
         base.to_string()
     } else {
         format!("Re: {base}")
@@ -176,6 +179,7 @@ mod tests {
     fn reply_subject_prefixes_exactly_once() {
         assert_eq!(reply_subject(Some("Hello"), "x"), "Re: Hello");
         assert_eq!(reply_subject(Some("Re: Hello"), "x"), "Re: Hello");
+        assert_eq!(reply_subject(Some("RE: Hello"), "x"), "RE: Hello");
         assert_eq!(reply_subject(None, "Generated"), "Re: Generated");
     }
 }

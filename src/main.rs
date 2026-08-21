@@ -23,6 +23,10 @@ enum Command {
         daily_limit: i32,
     },
     Health,
+    SyncCsv {
+        #[arg(long)]
+        dir: Option<std::path::PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -32,6 +36,7 @@ async fn main() {
     let result = match args.command {
         Command::GmailAuth { daily_limit } => gmail_auth(daily_limit).await,
         Command::Health => health().await,
+        Command::SyncCsv { dir } => sync_csv(dir).await,
     };
     if let Err(message) = result {
         tracing::error!("{message}");
@@ -79,10 +84,46 @@ async fn health() -> Result<(), String> {
     Ok(())
 }
 
+async fn sync_csv(dir: Option<std::path::PathBuf>) -> Result<(), String> {
+    let config = AppConfig::from_env().map_err(|e| e.to_string())?;
+    let pool = db::connect(config.database_url.expose())
+        .await
+        .map_err(|e| e.to_string())?;
+    db::migrate(&pool).await.map_err(|e| e.to_string())?;
+    let memory = prospecting_agent::memory::MemoryClient::new(&config.memory);
+    let dir = dir.unwrap_or_else(|| std::path::PathBuf::from(&config.csv_data_dir));
+    let report = prospecting_agent::workflows::sync::sync_dir(&pool, &memory, &dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    let rendered = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+    println!("{rendered}");
+    if let Some(fatal) = report.fatal {
+        return Err(format!("import stopped early: {fatal}"));
+    }
+    if !report.skipped.is_empty() || report.skipped_truncated > 0 {
+        tracing::warn!(
+            skipped = report.skipped.len() as u64 + report.skipped_truncated,
+            "some rows were skipped"
+        );
+    }
+    Ok(())
+}
+
 fn gmail_config() -> Result<prospecting_agent::config::GmailConfig, String> {
     let config = AppConfig::from_env().map_err(|e| e.to_string())?;
     config
         .email
         .gmail
         .ok_or_else(|| "gmail is not the configured email provider".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn clap_definition_is_internally_consistent() {
+        Args::command().debug_assert();
+    }
 }

@@ -1,6 +1,9 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use tokio::sync::Mutex;
 
 use chrono::Utc;
 use serde::Deserialize;
@@ -21,6 +24,11 @@ struct SendResponse {
     thread_id: String,
 }
 
+struct CachedToken {
+    token: String,
+    valid_until: Instant,
+}
+
 #[derive(Clone)]
 pub struct GmailConnector {
     http: reqwest::Client,
@@ -29,6 +37,7 @@ pub struct GmailConnector {
     pool: PgPool,
     api_base: String,
     cursor: Arc<AtomicUsize>,
+    tokens: Arc<Mutex<HashMap<String, CachedToken>>>,
 }
 
 impl GmailConnector {
@@ -44,7 +53,30 @@ impl GmailConnector {
             pool,
             api_base: DEFAULT_API_BASE.into(),
             cursor: Arc::new(AtomicUsize::new(0)),
+            tokens: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub(crate) async fn bearer_for(&self, sender: &SenderAccount) -> Result<String, ConnectorError> {
+        let mut cache = self.tokens.lock().await;
+        if let Some(cached) = cache.get(&sender.email)
+            && cached.valid_until > Instant::now()
+        {
+            return Ok(cached.token.clone());
+        }
+        let fresh = self
+            .oauth
+            .access_token_with_expiry(&self.http, &sender.refresh_token)
+            .await?;
+        let valid_until = Instant::now() + Duration::from_secs(fresh.expires_in_secs.saturating_sub(60));
+        cache.insert(
+            sender.email.clone(),
+            CachedToken {
+                token: fresh.token.clone(),
+                valid_until,
+            },
+        );
+        Ok(fresh.token)
     }
 
     #[must_use]
@@ -61,15 +93,14 @@ impl GmailConnector {
         &self.http
     }
 
-    pub(crate) fn oauth(&self) -> &OauthClient {
-        &self.oauth
-    }
-
     pub(crate) fn api_base(&self) -> &str {
         &self.api_base
     }
 
     async fn reserve_sender(&self, prefer: Option<&str>) -> Result<&SenderAccount, ConnectorError> {
+        if self.senders.is_empty() {
+            return Err(ConnectorError::NoSenders);
+        }
         let day = Utc::now().date_naive();
         if let Some(email) = prefer
             && let Some(sender) = self.senders.iter().find(|s| s.email == email)
@@ -95,7 +126,7 @@ impl GmailConnector {
         raw: String,
         thread_id: Option<&str>,
     ) -> Result<SendReceipt, ConnectorError> {
-        let token = self.oauth.access_token(&self.http, &sender.refresh_token).await?;
+        let token = self.bearer_for(sender).await?;
         let url = format!("{}/gmail/v1/users/me/messages/send", self.api_base);
         let mut body = serde_json::json!({ "raw": raw });
         if let Some(thread) = thread_id {

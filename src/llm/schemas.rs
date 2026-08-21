@@ -45,6 +45,27 @@ pub struct CompanyResearch {
     pub personalization_angles: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AccountAssessment {
+    pub stage: crate::domain::AccountStage,
+    pub health: crate::domain::AccountHealth,
+    pub coordination_flags: Vec<String>,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DetectedSignal {
+    pub kind: String,
+    pub strength: String,
+    pub summary: String,
+    pub source_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DetectedSignals {
+    pub signals: Vec<DetectedSignal>,
+}
+
 pub fn schema_instruction<T: JsonSchema>() -> String {
     let schema = schema_for!(T);
     let json = serde_json::to_string(&schema).unwrap_or_default();

@@ -26,7 +26,7 @@ fn from_row(row: &PgRow) -> Result<Engagement, DbError> {
     })
 }
 
-pub async fn insert(pool: &PgPool, engagement: &Engagement) -> Result<bool, DbError> {
+pub async fn insert<'e>(pool: impl sqlx::PgExecutor<'e>, engagement: &Engagement) -> Result<bool, DbError> {
     let result = sqlx::query(
         "INSERT INTO engagements (id, contact_id, channel, direction, kind, subject, body, \
          sequence_step, occurred_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING",
@@ -43,6 +43,36 @@ pub async fn insert(pool: &PgPool, engagement: &Engagement) -> Result<bool, DbEr
     .execute(pool)
     .await?;
     Ok(result.rows_affected() > 0)
+}
+
+pub struct DomainTouch {
+    pub touched: i64,
+    pub oldest: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub async fn recent_outbound_contacts_for_domain(
+    pool: &PgPool,
+    domain: &str,
+    window_days: i32,
+    excluding_contact: Option<Uuid>,
+) -> Result<DomainTouch, DbError> {
+    let row = sqlx::query(
+        "SELECT COUNT(DISTINCT e.contact_id) AS touched, MIN(e.occurred_at) AS oldest \
+         FROM engagements e \
+         JOIN contacts c ON c.id = e.contact_id \
+         WHERE c.company_domain = $1 AND e.direction = 'outbound' AND e.kind = 'sent' \
+         AND e.occurred_at > now() - make_interval(days => $2) \
+         AND ($3::uuid IS NULL OR e.contact_id <> $3)",
+    )
+    .bind(crate::domain::normalize_domain(domain))
+    .bind(window_days)
+    .bind(excluding_contact)
+    .fetch_one(pool)
+    .await?;
+    Ok(DomainTouch {
+        touched: row.get("touched"),
+        oldest: row.get("oldest"),
+    })
 }
 
 pub async fn for_contact(pool: &PgPool, contact_id: Uuid, limit: i64) -> Result<Vec<Engagement>, DbError> {

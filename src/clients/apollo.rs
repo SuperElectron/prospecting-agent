@@ -191,7 +191,16 @@ impl ApolloClient {
 
     pub async fn match_person(&self, email: &str) -> Result<Option<ApolloPerson>, ApolloError> {
         let body = json!({"email": email, "reveal_personal_emails": false});
-        let raw = self.post_json("/v1/people/match", &body).await?;
+        self.match_request(&body).await
+    }
+
+    pub async fn match_person_by_id(&self, id: &str) -> Result<Option<ApolloPerson>, ApolloError> {
+        let body = json!({"id": id, "reveal_personal_emails": false});
+        self.match_request(&body).await
+    }
+
+    async fn match_request(&self, body: &serde_json::Value) -> Result<Option<ApolloPerson>, ApolloError> {
+        let raw = self.post_json("/v1/people/match", body).await?;
         let parsed: MatchResponse = Self::decode(&raw)?;
         Ok(parsed.person)
     }
@@ -345,6 +354,18 @@ mod tests {
             .await;
         let found = client(&server).match_person("jane@acme.io").await.unwrap();
         assert_eq!(found.unwrap().id, "p-1");
+    }
+
+    #[tokio::test]
+    async fn html_interstitial_with_status_200_is_a_decode_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/people/match"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html>blocked</html>"))
+            .mount(&server)
+            .await;
+        let err = client(&server).match_person("j@a.io").await.unwrap_err();
+        assert!(matches!(err, ApolloError::Decode(_)));
     }
 
     #[tokio::test]

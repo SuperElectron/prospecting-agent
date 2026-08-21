@@ -1,6 +1,25 @@
 # Changelog
 
-## v0.2.0 — M2 Clients & Connectors (2026-08-21)
+## v0.3.0 — M3 Workflows (2026-08-21)
+
+The full prospecting loop as callable workflows, live-verified end to end: CSV import through research, strategy, outreach generation, and reply handling.
+
+### Added
+- CSV sync: companies, contacts, and notes land in Postgres and memory with per-row skip reporting, a note-import ledger, and backend-failure circuit breaking
+- Discovery: Apollo people search scoped by ICP titles and seniority, match-by-id enrichment, per-account and per-run credit budgets that count spend rather than successes
+- Enrichment: contact and company enrichment with convergence markers (attempt timestamps, terminal no-match status) so failed lookups stop burning credits
+- Research: Tavily search plus LLM summarization into grounded company briefs and personalization angles, with prompt-injection fencing around all third-party text
+- Signals: hiring, funding, leadership, and expansion detection with idempotent ingestion and strength scoring
+- Account strategy: LLM assessment into typed stage and health enums (fail-closed schemas), coordination flags, and outreach preflight guards (converted accounts, carpet-bomb window, negative events)
+- Outreach: grounded email generation citing memorized research, messaging-rule validation with one retry carrying the rejected draft, HTML rendering with full escaping
+- Reply analysis: record-first classification into typed intents, transactional status disposition and sequence stop, opt-out handling
+- Weekly report over a single aggregate query
+- Migrations 0004–0007: note ledger, enrichment tracking with deterministic crm-id dedupe (losers staged to a backup table), strategy constraints, sequence stop timestamps
+
+### Changed
+- Milestone sweep: per-module error enums for discovery and reporting, shared truncation and memory helpers, canonical-domain drift kept on the queried company row, enrichment failures now recorded so the queue converges
+
+
 
 Data providers and the email channel, all live-verified against real services.
 

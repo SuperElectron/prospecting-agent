@@ -1,0 +1,13 @@
+pub mod contacts;
+pub mod enrich;
+
+pub use contacts::{DiscoveryBudget, DiscoveryReport, discover_contacts, source_contacts};
+pub use enrich::{EnrichmentReport, enrich_companies, enrich_contacts};
+
+#[derive(Debug, thiserror::Error)]
+pub enum DiscoveryError {
+    #[error("storage error: {0}")]
+    Db(#[from] crate::db::DbError),
+    #[error("ingest error: {0}")]
+    Ingest(#[from] crate::workflows::sync::SyncError),
+}
