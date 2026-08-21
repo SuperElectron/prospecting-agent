@@ -1374,13 +1374,13 @@ struct SpyNotifier(
 );
 
 impl prospecting_agent::connectors::Notifier for SpyNotifier {
-    async fn notify(
+    fn notify(
         &self,
         level: prospecting_agent::connectors::NotifyLevel,
         message: &str,
-    ) -> Result<(), prospecting_agent::connectors::ConnectorError> {
+    ) -> impl Future<Output = Result<(), prospecting_agent::connectors::ConnectorError>> + Send {
         self.0.lock().unwrap().push((level, message.to_string()));
-        Ok(())
+        std::future::ready(Ok(()))
     }
 }
 

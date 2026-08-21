@@ -21,6 +21,11 @@ Set `TEST_DATABASE_URL` (see `.env.example`) or the integration suites skip
 locally; CI runs them against a fresh Postgres service and the vacuity guards
 make silent skips fail there.
 
+CI runs the latest stable clippy. Keep the local toolchain current (with
+Homebrew: `brew upgrade rust`) or newer lints will fail only in CI. A merge is
+not done until `gh run list` shows the run green — local gates are necessary,
+not sufficient.
+
 ## Code rules
 
 - No code comments; the code and its tests carry the intent.
