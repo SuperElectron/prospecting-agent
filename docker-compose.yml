@@ -20,25 +20,50 @@ services:
     image: qdrant/qdrant:v1.15.5
     volumes:
       - qdrant_data:/qdrant/storage
+    networks:
+      default:
+        aliases:
+          - mem0_store
     healthcheck:
       test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333'"]
       interval: 5s
       timeout: 3s
       retries: 10
 
+  llm-router:
+    image: python:3.12-alpine
+    command: ["python3", "/router.py"]
+    environment:
+      LLM_CHAT_UPSTREAM: ${LLM_CHAT_UPSTREAM:-http://host.docker.internal:8000}
+      LLM_EMBED_UPSTREAM: ${LLM_EMBED_UPSTREAM:-http://host.docker.internal:8002}
+    volumes:
+      - ./docker/llm_router.py:/router.py:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8080/v1/models\", timeout=4)'"]
+      interval: 10s
+      timeout: 6s
+      retries: 5
+
   memory:
     image: mem0/openmemory-mcp@sha256:b665d382a94fdc18c7bb84a647d4bebdc98d9e7fc1146fc5e559ca7f5f7f9211
     environment:
-      OPENAI_BASE_URL: ${LLM_BASE_URL_DOCKER:-http://host.docker.internal:8000/v1}
+      OPENAI_BASE_URL: http://llm-router:8080/v1
       OPENAI_API_KEY: ${LLM_API_KEY:-local}
+      DATABASE_URL: sqlite:////usr/src/openmemory/data/openmemory.db
       QDRANT_HOST: qdrant
       USER: ${MEMORY_USER:-prospecting}
     ports:
       - "127.0.0.1:8765:8765"
+    volumes:
+      - memory_data:/usr/src/openmemory/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       qdrant:
+        condition: service_healthy
+      llm-router:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/8765' || exit 1"]
@@ -49,3 +74,4 @@ services:
 volumes:
   pgdata:
   qdrant_data:
+  memory_data:
