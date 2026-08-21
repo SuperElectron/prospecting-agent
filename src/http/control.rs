@@ -66,7 +66,7 @@ pub async fn enqueue_job(State(state): State<Arc<AppState>>, Path(name): Path<St
             axum::Json(serde_json::json!({"error": format!("unknown job {name}")})),
         );
     }
-    match crate::jobs::runtime::enqueue(&state.ctx.pool, &name).await {
+    match crate::jobs::runtime::enqueue(state.ctx.config.database_url.expose(), &name).await {
         Ok(()) => (
             StatusCode::ACCEPTED,
             axum::Json(serde_json::json!({"enqueued": name})),

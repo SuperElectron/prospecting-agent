@@ -5,8 +5,8 @@ use sqlx::PgPool;
 
 use crate::clients::{ApolloClient, TavilyClient};
 use crate::config::AppConfig;
-use crate::connectors::LogNotifier;
 use crate::connectors::gmail::{GmailConnector, OauthClient, load_senders};
+use crate::connectors::{LogNotifier, Notifier, NotifyLevel};
 use crate::llm::{LlmClient, Policy};
 use crate::memory::MemoryClient;
 
@@ -121,7 +121,6 @@ pub async fn run_job(ctx: &JobContext, name: &str) -> Result<serde_json::Value, 
             let report = crate::workflows::reporting::weekly_report(&ctx.pool, 7)
                 .await
                 .map_err(|e| failed(e.to_string()))?;
-            use crate::connectors::{Notifier, NotifyLevel};
             if let Err(e) = ctx.notifier.notify(NotifyLevel::Info, &report.render()).await {
                 tracing::warn!(error = %e, "weekly report notify failed");
             }

@@ -152,7 +152,7 @@ async fn worker() -> Result<(), String> {
 async fn job(name: &str, enqueue: bool) -> Result<(), String> {
     let ctx = job_context().await?;
     if enqueue {
-        prospecting_agent::jobs::runtime::enqueue(&ctx.pool, name)
+        prospecting_agent::jobs::runtime::enqueue(ctx.config.database_url.expose(), name)
             .await
             .map_err(|e| e.to_string())?;
         println!("enqueued {name}");
