@@ -7,10 +7,14 @@ pub enum EntityRef {
 }
 
 impl EntityRef {
+    pub fn company(raw_domain: &str) -> Self {
+        Self::Company(crate::domain::normalize_domain(raw_domain))
+    }
+
     pub fn tag(&self) -> String {
         match self {
             Self::Contact(id) => format!("contact:{id}"),
-            Self::Company(domain) => format!("company:{domain}"),
+            Self::Company(domain) => format!("company:{}", crate::domain::normalize_domain(domain)),
         }
     }
 
@@ -18,7 +22,7 @@ impl EntityRef {
         let (kind, value) = tag.split_once(':')?;
         match kind {
             "contact" => Uuid::parse_str(value).ok().map(Self::Contact),
-            "company" => Some(Self::Company(value.to_string())),
+            "company" if !value.is_empty() => Some(Self::company(value)),
             _ => None,
         }
     }
@@ -47,5 +51,20 @@ mod tests {
         assert_eq!(EntityRef::parse("deal:123"), None);
         assert_eq!(EntityRef::parse("contact:not-a-uuid"), None);
         assert_eq!(EntityRef::parse("no-colon"), None);
+        assert_eq!(EntityRef::parse("company:"), None);
+    }
+
+    #[test]
+    fn company_constructor_normalizes_case_scheme_and_www() {
+        let a = EntityRef::company("  https://www.Acme.IO/about  ");
+        let b = EntityRef::company("acme.io");
+        assert_eq!(a, b);
+        assert_eq!(a.tag(), "company:acme.io");
+    }
+
+    #[test]
+    fn mixed_case_variant_still_tags_normalized() {
+        let raw = EntityRef::Company("Acme.IO".into());
+        assert_eq!(raw.tag(), "company:acme.io");
     }
 }
