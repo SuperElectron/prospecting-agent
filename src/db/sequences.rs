@@ -23,10 +23,11 @@ fn from_row(row: &PgRow) -> Result<SequenceState, DbError> {
         last_sent_at: row.get("last_sent_at"),
         stopped: row.get("stopped"),
         stop_reason,
+        stopped_at: row.get("stopped_at"),
     })
 }
 
-pub async fn upsert(pool: &PgPool, state: &SequenceState) -> Result<(), DbError> {
+pub async fn upsert<'e>(pool: impl sqlx::PgExecutor<'e>, state: &SequenceState) -> Result<(), DbError> {
     let stop_reason = state
         .stop_reason
         .as_ref()
@@ -34,11 +35,11 @@ pub async fn upsert(pool: &PgPool, state: &SequenceState) -> Result<(), DbError>
         .transpose()?;
     sqlx::query(
         "INSERT INTO sequence_states (contact_id, cadence, current_step, max_steps, last_sent_at, \
-         stopped, stop_reason) VALUES ($1,$2,$3,$4,$5,$6,$7) \
+         stopped, stop_reason, stopped_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) \
          ON CONFLICT (contact_id) DO UPDATE SET cadence = EXCLUDED.cadence, \
          current_step = EXCLUDED.current_step, max_steps = EXCLUDED.max_steps, \
          last_sent_at = EXCLUDED.last_sent_at, stopped = EXCLUDED.stopped, \
-         stop_reason = EXCLUDED.stop_reason",
+         stop_reason = EXCLUDED.stop_reason, stopped_at = EXCLUDED.stopped_at",
     )
     .bind(state.contact_id)
     .bind(&state.cadence)
@@ -47,6 +48,7 @@ pub async fn upsert(pool: &PgPool, state: &SequenceState) -> Result<(), DbError>
     .bind(state.last_sent_at)
     .bind(state.stopped)
     .bind(stop_reason)
+    .bind(state.stopped_at)
     .execute(pool)
     .await?;
     Ok(())

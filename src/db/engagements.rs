@@ -26,7 +26,7 @@ fn from_row(row: &PgRow) -> Result<Engagement, DbError> {
     })
 }
 
-pub async fn insert(pool: &PgPool, engagement: &Engagement) -> Result<bool, DbError> {
+pub async fn insert<'e>(pool: impl sqlx::PgExecutor<'e>, engagement: &Engagement) -> Result<bool, DbError> {
     let result = sqlx::query(
         "INSERT INTO engagements (id, contact_id, channel, direction, kind, subject, body, \
          sequence_step, occurred_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING",
