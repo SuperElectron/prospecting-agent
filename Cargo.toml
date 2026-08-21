@@ -1,0 +1,21 @@
+[package]
+name = "prospecting-agent"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT-0"
+description = "AI prospecting agent: lead discovery, research, and multi-channel outreach automation"
+repository = "https://github.com/SuperElectron/prospecting-agent"
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = "warn"
+
+[profile.release]
+lto = true
+strip = true

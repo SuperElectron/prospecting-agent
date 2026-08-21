@@ -1,11 +1,8 @@
 # OMC state
 .omc/
 
-# Cache (cloned reference repos, temp data)
+# Cache
 .cache/
-
-# Dependencies
-node_modules/
 
 # Env / secrets
 .env
@@ -15,18 +12,12 @@ node_modules/
 credentials.json
 token.json
 
-# Build output
-dist/
-build/
-*.tsbuildinfo
-
-# Trigger.dev
-.trigger/
+# Rust
+target/
 
 # Logs
 logs/
 *.log
-npm-debug.log*
 
 # OS / editor
 .DS_Store
@@ -34,10 +25,7 @@ npm-debug.log*
 .vscode/
 *.swp
 
-# Test / coverage
-coverage/
-.nyc_output/
-
 # Local data
 data/local/
 *.csv.bak
+

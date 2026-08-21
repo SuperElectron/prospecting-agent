@@ -1,0 +1,4 @@
+settings.local.json
+secrets/
+worktrees/
+vault-key.json
