@@ -198,6 +198,27 @@ pub async fn list_unenriched(pool: &PgPool, limit: i64) -> Result<Vec<Company>, 
     rows.iter().map(from_row).collect()
 }
 
+pub async fn list_without_contacts(pool: &PgPool, limit: i64) -> Result<Vec<Company>, DbError> {
+    let rows = sqlx::query(
+        "SELECT c.* FROM companies c \
+         WHERE NOT EXISTS (SELECT 1 FROM contacts k WHERE k.company_domain = c.domain) \
+         AND (c.discovery_attempted_at IS NULL OR c.discovery_attempted_at < now() - interval '30 days') \
+         ORDER BY c.icp_fit_score DESC NULLS LAST, c.updated_at ASC LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    rows.iter().map(from_row).collect()
+}
+
+pub async fn mark_discovery_attempted(pool: &PgPool, domain: &str) -> Result<(), DbError> {
+    sqlx::query("UPDATE companies SET discovery_attempted_at = now() WHERE domain = $1")
+        .bind(crate::domain::normalize_domain(domain))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn list_recent(pool: &PgPool, limit: i64) -> Result<Vec<Company>, DbError> {
     let rows = sqlx::query("SELECT * FROM companies ORDER BY updated_at DESC LIMIT $1")
         .bind(limit)

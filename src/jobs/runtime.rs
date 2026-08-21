@@ -10,9 +10,10 @@ use sqlx::postgres::PgPoolOptions;
 use crate::connectors::{Notifier, NotifyLevel};
 use crate::jobs::{JobContext, JobError, JobKind, NamedJob, run_job};
 
-const DEFAULT_SCHEDULES: [(JobKind, &str); 5] = [
+const DEFAULT_SCHEDULES: [(JobKind, &str); 6] = [
     (JobKind::CsvSync, "0 0 6 * * *"),
     (JobKind::EnrichContacts, "0 30 6 * * *"),
+    (JobKind::DiscoverContacts, "0 45 6 * * *"),
     (JobKind::ResearchCompanies, "0 0 7 * * *"),
     (JobKind::DetectSignals, "0 0 8 * * *"),
     (JobKind::WeeklyReport, "0 0 9 * * Mon"),
