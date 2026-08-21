@@ -207,6 +207,18 @@ fn cadence_from_map(env: &EnvMap) -> Result<Cadence, ConfigError> {
     cadence.min_days_between = parse_number(env, "CADENCE_MIN_DAYS_BETWEEN", cadence.min_days_between)?;
     cadence.send_hours.start = parse_number(env, "SEND_HOURS_START", cadence.send_hours.start)?;
     cadence.send_hours.end = parse_number(env, "SEND_HOURS_END", cadence.send_hours.end)?;
+    if let Some(raw) = optional(env, "SEND_DAYS") {
+        let days: Result<Vec<chrono::Weekday>, _> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|day| !day.is_empty())
+            .map(str::parse)
+            .collect();
+        cadence.send_days = days.map_err(|_| ConfigError::Invalid {
+            key: "SEND_DAYS",
+            reason: format!("cannot parse {raw} as weekday names"),
+        })?;
+    }
     cadence.validate().map_err(|e| ConfigError::Invalid {
         key: "SEND_HOURS_START",
         reason: e.to_string(),
@@ -313,6 +325,41 @@ mod tests {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect()
+    }
+
+    #[test]
+    fn cadence_parses_selects_overrides_and_validates() {
+        let mut env = base_env();
+        let cfg = AppConfig::from_map(&env).unwrap();
+        assert_eq!(cfg.cadence, Cadence::standard());
+
+        env.insert("CADENCE".into(), "gentle".into());
+        env.insert("CADENCE_MAX_STEPS".into(), "4".into());
+        env.insert("SEND_HOURS_START".into(), "9".into());
+        env.insert("SEND_DAYS".into(), "mon, fri".into());
+        let cfg = AppConfig::from_map(&env).unwrap();
+        assert_eq!(cfg.cadence.name, "gentle");
+        assert_eq!(cfg.cadence.max_steps, 4);
+        assert_eq!(cfg.cadence.send_hours.start, 9);
+        assert_eq!(
+            cfg.cadence.send_days,
+            vec![chrono::Weekday::Mon, chrono::Weekday::Fri]
+        );
+
+        env.insert("CADENCE".into(), "aggressive".into());
+        assert!(matches!(
+            AppConfig::from_map(&env),
+            Err(ConfigError::Invalid { key: "CADENCE", .. })
+        ));
+        env.insert("CADENCE".into(), "gentle".into());
+        env.insert("SEND_HOURS_END".into(), "9".into());
+        assert!(AppConfig::from_map(&env).is_err());
+        env.insert("SEND_HOURS_END".into(), "16".into());
+        env.insert("SEND_DAYS".into(), "funday".into());
+        assert!(matches!(
+            AppConfig::from_map(&env),
+            Err(ConfigError::Invalid { key: "SEND_DAYS", .. })
+        ));
     }
 
     #[test]
