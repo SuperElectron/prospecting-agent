@@ -17,13 +17,13 @@ pub fn seniority_from_apollo(raw: &str) -> Option<Seniority> {
     }
 }
 
+pub fn usable_email(raw: Option<&str>) -> Option<&str> {
+    raw.filter(|e| !e.is_empty() && !e.contains("not_unlocked"))
+}
+
 pub fn contact_from_person(person: &ApolloPerson) -> Contact {
     let mut contact = Contact::new(ContactSource::Apollo);
-    contact.email = person
-        .email
-        .as_deref()
-        .filter(|e| !e.is_empty() && !e.contains("not_unlocked"))
-        .map(str::to_string);
+    contact.email = usable_email(person.email.as_deref()).map(str::to_string);
     contact.first_name.clone_from(&person.first_name);
     contact.last_name.clone_from(&person.last_name);
     contact.title.clone_from(&person.title);
