@@ -1,0 +1,13 @@
+[package]
+name = "prospecting-agent"
+version = "0.1.0"
+edition = "2021"
+license = "MIT-0"
+description = "AI prospecting agent: lead discovery, research, and multi-channel outreach automation"
+repository = "https://github.com/SuperElectron/prospecting-agent"
+
+[dependencies]
+
+[profile.release]
+lto = true
+strip = true

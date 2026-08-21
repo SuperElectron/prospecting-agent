@@ -28,3 +28,5 @@ logs/
 # Local data
 data/local/
 *.csv.bak
+
+/target
