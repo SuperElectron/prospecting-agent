@@ -43,7 +43,7 @@ prospecting-agent gmail-auth --daily-limit 25
 ```
 
 Runs the installed-app OAuth flow (PKCE) against your own Google Cloud client.
-Credentials land in `.claude/secrets/` (gitignored). Scopes: send +
+The sender credentials the app writes land in `.claude/secrets/` (gitignored, owner-only 0600); the OAuth client JSON you place there yourself keeps whatever mode you give it. Scopes: send +
 readonly.
 
 ## Verify

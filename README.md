@@ -26,7 +26,11 @@ An open-source AI prospecting agent that finds leads, researches them, and runs 
 
 ## Docs
 
-- Read the [wiki](https://github.com/SuperElectron/prospecting-agent/wiki) for details. 
+- [Setup](docs/setup.md) — fresh clone to green gates
+- [Architecture](docs/architecture.md) — layers, invariants, queue isolation ([diagram](docs/architecture.svg))
+- [Operations](docs/operations.md) — schedules, control API, spend controls, failure playbook
+- [Contributing](CONTRIBUTING.md)
+- [Wiki](https://github.com/SuperElectron/prospecting-agent/wiki) — plan of record
 - Run `./scripts/setup.sh` on a fresh clone.
 
 ## Usage
