@@ -135,6 +135,69 @@ pub async fn by_domain(pool: &PgPool, domain: &str) -> Result<Option<Company>, D
     row.as_ref().map(from_row).transpose()
 }
 
+pub async fn upsert_enrichment(pool: &PgPool, company: &Company) -> Result<uuid::Uuid, DbError> {
+    let row = sqlx::query(
+        "INSERT INTO companies (id, domain, name, industry, employee_count, location, linkedin_url, \
+         crm_id, hiring_velocity, icp_fit_score, summary, created_at, updated_at) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,NULL,$9,$10,$11) \
+         ON CONFLICT (domain) DO UPDATE SET \
+         name = COALESCE(EXCLUDED.name, companies.name), \
+         industry = COALESCE(EXCLUDED.industry, companies.industry), \
+         employee_count = COALESCE(EXCLUDED.employee_count, companies.employee_count), \
+         location = COALESCE(EXCLUDED.location, companies.location), \
+         linkedin_url = COALESCE(EXCLUDED.linkedin_url, companies.linkedin_url), \
+         crm_id = COALESCE(EXCLUDED.crm_id, companies.crm_id), \
+         summary = COALESCE(EXCLUDED.summary, companies.summary), \
+         updated_at = EXCLUDED.updated_at \
+         RETURNING id",
+    )
+    .bind(company.id)
+    .bind(crate::domain::normalize_domain(&company.domain))
+    .bind(&company.name)
+    .bind(&company.industry)
+    .bind(
+        company
+            .employee_count
+            .map(|n| {
+                i32::try_from(n).map_err(|_| DbError::Codec {
+                    context: "company.employee_count",
+                    reason: format!("{n} out of range"),
+                })
+            })
+            .transpose()?,
+    )
+    .bind(&company.location)
+    .bind(&company.linkedin_url)
+    .bind(&company.crm_id)
+    .bind(&company.summary)
+    .bind(company.created_at)
+    .bind(company.updated_at)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.get("id"))
+}
+
+pub async fn mark_enrichment_attempted(pool: &PgPool, domain: &str) -> Result<(), DbError> {
+    sqlx::query("UPDATE companies SET enrichment_attempted_at = now() WHERE domain = $1")
+        .bind(crate::domain::normalize_domain(domain))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn list_unenriched(pool: &PgPool, limit: i64) -> Result<Vec<Company>, DbError> {
+    let rows = sqlx::query(
+        "SELECT * FROM companies \
+         WHERE (industry IS NULL OR employee_count IS NULL OR summary IS NULL) \
+         AND (enrichment_attempted_at IS NULL OR enrichment_attempted_at < now() - interval '30 days') \
+         ORDER BY updated_at ASC LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    rows.iter().map(from_row).collect()
+}
+
 pub async fn list_recent(pool: &PgPool, limit: i64) -> Result<Vec<Company>, DbError> {
     let rows = sqlx::query("SELECT * FROM companies ORDER BY updated_at DESC LIMIT $1")
         .bind(limit)

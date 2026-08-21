@@ -191,7 +191,16 @@ impl ApolloClient {
 
     pub async fn match_person(&self, email: &str) -> Result<Option<ApolloPerson>, ApolloError> {
         let body = json!({"email": email, "reveal_personal_emails": false});
-        let raw = self.post_json("/v1/people/match", &body).await?;
+        self.match_request(&body).await
+    }
+
+    pub async fn match_person_by_id(&self, id: &str) -> Result<Option<ApolloPerson>, ApolloError> {
+        let body = json!({"id": id, "reveal_personal_emails": false});
+        self.match_request(&body).await
+    }
+
+    async fn match_request(&self, body: &serde_json::Value) -> Result<Option<ApolloPerson>, ApolloError> {
+        let raw = self.post_json("/v1/people/match", body).await?;
         let parsed: MatchResponse = Self::decode(&raw)?;
         Ok(parsed.person)
     }
