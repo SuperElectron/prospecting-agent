@@ -5,10 +5,11 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 use crate::clients::{ApolloClient, TavilyClient};
-use crate::config::AppConfig;
+use crate::config::{AppConfig, IcpCriteria};
 use crate::connectors::gmail::{GmailConnector, OauthClient, load_senders};
 use crate::connectors::health::{DbProbe, HealthInputs, HealthReport, run_health_check};
 use crate::connectors::{LogNotifier, Notifier, NotifyLevel};
+use crate::db::companies;
 use crate::llm::{LlmClient, Policy};
 use crate::memory::MemoryClient;
 use crate::workflows::{discovery, outreach, reporting, research, sync};
@@ -98,6 +99,8 @@ pub enum JobError {
     Db(#[from] crate::db::DbError),
     #[error("outreach error: {0}")]
     Outreach(#[from] crate::workflows::outreach::OutreachError),
+    #[error("every discovery search failed across {0} companies")]
+    DiscoveryUnavailable(usize),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,25 +184,7 @@ pub async fn run_job(ctx: &JobContext, kind: JobKind) -> Result<serde_json::Valu
             let report = sync::sync_dir(&ctx.pool, &ctx.memory, &ctx.config.csv_data_dir).await?;
             Ok(serde_json::to_value(report)?)
         }
-        JobKind::DiscoverContacts => {
-            let companies = crate::db::companies::list_without_contacts(&ctx.pool, DISCOVER_BATCH)
-                .await
-                .map_err(discovery::DiscoveryError::from)?;
-            let domains: Vec<String> = companies.into_iter().map(|company| company.domain).collect();
-            let report = discovery::source_contacts(
-                &ctx.pool,
-                &ctx.memory,
-                &ctx.apollo,
-                &crate::config::IcpCriteria::default(),
-                &domains,
-                &discovery::DiscoveryBudget::default(),
-            )
-            .await?;
-            Ok(serde_json::json!({
-                "domains": domains,
-                "report": serde_json::to_value(report)?,
-            }))
-        }
+        JobKind::DiscoverContacts => discover_batch(ctx).await,
         JobKind::EnrichContacts => {
             let mut credits = ENRICH_CREDITS;
             let report =
@@ -252,6 +237,44 @@ pub async fn run_job(ctx: &JobContext, kind: JobKind) -> Result<serde_json::Valu
             Ok(serde_json::to_value(report)?)
         }
     }
+}
+
+async fn discover_batch(ctx: &JobContext) -> Result<serde_json::Value, JobError> {
+    let candidates = companies::list_without_contacts(&ctx.pool, DISCOVER_BATCH).await?;
+    let icp = IcpCriteria::default();
+    let budget = discovery::DiscoveryBudget::default();
+    let mut credits = budget.max_credits_per_run;
+    let mut attempted: Vec<String> = Vec::new();
+    let mut searches_failed = 0usize;
+    let mut total = discovery::DiscoveryReport::default();
+    for company in candidates {
+        if credits == 0 {
+            break;
+        }
+        let report = discovery::discover_contacts(
+            &ctx.pool,
+            &ctx.memory,
+            &ctx.apollo,
+            &icp,
+            &company.domain,
+            &budget,
+            &mut credits,
+        )
+        .await?;
+        companies::mark_discovery_attempted(&ctx.pool, &company.domain).await?;
+        if report.search_failed > 0 {
+            searches_failed += 1;
+        }
+        total.absorb(&report);
+        attempted.push(company.domain);
+    }
+    if !attempted.is_empty() && searches_failed == attempted.len() {
+        return Err(JobError::DiscoveryUnavailable(attempted.len()));
+    }
+    Ok(serde_json::json!({
+        "attempted": attempted,
+        "report": serde_json::to_value(total)?,
+    }))
 }
 
 async fn research_batch(ctx: &JobContext) -> Result<serde_json::Value, JobError> {
