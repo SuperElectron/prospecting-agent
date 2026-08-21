@@ -13,7 +13,7 @@ impl Default for PreflightConfig {
             carpet_bomb_window_days: 7,
             max_contacts_per_window: 2,
             negative_event_delay_days: 21,
-            warm_intro_cadence: "warm-intro".into(),
+            warm_intro_cadence: "gentle".into(),
             warm_intro_max_emails: 2,
         }
     }
