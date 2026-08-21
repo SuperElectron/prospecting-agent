@@ -86,6 +86,47 @@ pub async fn upsert(pool: &PgPool, company: &Company) -> Result<uuid::Uuid, DbEr
     Ok(row.get("id"))
 }
 
+pub async fn upsert_import(pool: &PgPool, company: &Company) -> Result<uuid::Uuid, DbError> {
+    let row = sqlx::query(
+        "INSERT INTO companies (id, domain, name, industry, employee_count, location, linkedin_url, \
+         crm_id, hiring_velocity, icp_fit_score, summary, created_at, updated_at) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) \
+         ON CONFLICT (domain) DO UPDATE SET \
+         name = COALESCE(EXCLUDED.name, companies.name), \
+         industry = COALESCE(EXCLUDED.industry, companies.industry), \
+         employee_count = COALESCE(EXCLUDED.employee_count, companies.employee_count), \
+         location = COALESCE(EXCLUDED.location, companies.location), \
+         updated_at = EXCLUDED.updated_at \
+         RETURNING id",
+    )
+    .bind(company.id)
+    .bind(crate::domain::normalize_domain(&company.domain))
+    .bind(&company.name)
+    .bind(&company.industry)
+    .bind(
+        company
+            .employee_count
+            .map(|n| {
+                i32::try_from(n).map_err(|_| DbError::Codec {
+                    context: "company.employee_count",
+                    reason: format!("{n} out of range"),
+                })
+            })
+            .transpose()?,
+    )
+    .bind(&company.location)
+    .bind(&company.linkedin_url)
+    .bind(&company.crm_id)
+    .bind(None::<String>)
+    .bind(company.icp_fit_score.map(i16::from))
+    .bind(&company.summary)
+    .bind(company.created_at)
+    .bind(company.updated_at)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.get("id"))
+}
+
 pub async fn by_domain(pool: &PgPool, domain: &str) -> Result<Option<Company>, DbError> {
     let row = sqlx::query("SELECT * FROM companies WHERE domain = $1")
         .bind(crate::domain::normalize_domain(domain))

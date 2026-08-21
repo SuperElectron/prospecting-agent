@@ -34,6 +34,7 @@ An open-source AI prospecting agent that finds leads, researches them, and runs 
 ```sh
 prospecting-agent gmail-auth   # authorize a sending account (browser consent)
 prospecting-agent health      # probe db, LLM, memory, gmail, capacity
+prospecting-agent sync-csv    # import data/ into Postgres and memory
 ```
 - Read [settings.example.json](.claude/settings.example.json) for how to plug in your API keys.
 
