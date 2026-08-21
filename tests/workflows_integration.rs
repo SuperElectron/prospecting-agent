@@ -1130,3 +1130,156 @@ async fn preflight_blocks_customers_and_modifies_new_contacts_at_advanced_accoun
         prospecting_agent::workflows::accounts::PreflightDecision::Proceed
     );
 }
+
+#[tokio::test]
+async fn email_generation_grounds_in_context_and_validates_rules() {
+    let pool = require_pool!();
+    let llm_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    mount_recall_empty(&memory_server).await;
+    let domain = unique_domain("gen");
+    let mut company = prospecting_agent::domain::Company::new(&domain);
+    company.summary = Some("They build billing APIs for SaaS teams.".into());
+    db::companies::upsert(&pool, &company).await.unwrap();
+    let mut contact = prospecting_agent::domain::Contact::new(prospecting_agent::domain::ContactSource::Csv);
+    contact.email = Some(format!("vp-{}@{domain}", uuid::Uuid::new_v4().simple()));
+    contact.first_name = Some("Jane".into());
+    contact.company_domain = Some(domain.clone());
+    db::contacts::upsert(&pool, &contact).await.unwrap();
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
+            "subject": "billing question",
+            "body": "Hi Jane,\n\nSaw the billing API work. Worth a quick chat about rollout speed?\n\nBest",
+            "personalization_fact": "they build billing APIs",
+        }))))
+        .expect(1)
+        .mount(&llm_server)
+        .await;
+    let email = prospecting_agent::workflows::outreach::generate_email(
+        &pool,
+        &memory_client(&memory_server),
+        &llm_client(&llm_server),
+        &prospecting_agent::llm::default_policies(),
+        &prospecting_agent::config::MessagingRules::default(),
+        &contact,
+        prospecting_agent::workflows::outreach::EmailContext {
+            step: 1,
+            max_steps: 3,
+            is_first_touch: true,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(email.subject, "billing question");
+    assert!(email.body_html.contains("<p>Hi Jane,</p>"));
+    assert_eq!(email.step, 1);
+}
+
+#[tokio::test]
+async fn rule_violations_trigger_one_retry_then_typed_failure() {
+    let pool = require_pool!();
+    let llm_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    mount_recall_empty(&memory_server).await;
+    let contact = prospecting_agent::domain::Contact::new(prospecting_agent::domain::ContactSource::Csv);
+    let mut with_email = contact.clone();
+    with_email.email = Some("target@example.com".into());
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
+                "subject": "s",
+                "body": "Let's leverage synergy across the board.",
+                "personalization_fact": "f",
+            }))),
+        )
+        .expect(2)
+        .mount(&llm_server)
+        .await;
+    let err = prospecting_agent::workflows::outreach::generate_email(
+        &pool,
+        &memory_client(&memory_server),
+        &llm_client(&llm_server),
+        &[],
+        &prospecting_agent::config::MessagingRules::default(),
+        &with_email,
+        prospecting_agent::workflows::outreach::EmailContext {
+            step: 1,
+            max_steps: 3,
+            is_first_touch: true,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        prospecting_agent::workflows::outreach::OutreachError::RulesViolated(_)
+    ));
+}
+
+#[tokio::test]
+async fn generation_without_an_email_address_is_a_typed_error() {
+    let pool = require_pool!();
+    let llm_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    let contact = prospecting_agent::domain::Contact::new(prospecting_agent::domain::ContactSource::Csv);
+    let err = prospecting_agent::workflows::outreach::generate_email(
+        &pool,
+        &memory_client(&memory_server),
+        &llm_client(&llm_server),
+        &[],
+        &prospecting_agent::config::MessagingRules::default(),
+        &contact,
+        prospecting_agent::workflows::outreach::EmailContext {
+            step: 1,
+            max_steps: 3,
+            is_first_touch: true,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        prospecting_agent::workflows::outreach::OutreachError::NoEmail(_)
+    ));
+}
+
+#[tokio::test]
+#[ignore = "live generation smoke: needs TEST_GENERATION_LIVE, DGX LLM, postgres, memory, and jasper.ai seed + research rows"]
+async fn live_email_generation_end_to_end() {
+    if std::env::var("TEST_GENERATION_LIVE").is_err() {
+        eprintln!("TEST_GENERATION_LIVE not set; skipping live generation smoke");
+        return;
+    }
+    let pool = require_pool!();
+    let config = prospecting_agent::config::AppConfig::from_env().expect("full env");
+    let memory = MemoryClient::new(&config.memory);
+    let llm = prospecting_agent::llm::LlmClient::new(&config.llm);
+    let contact = db::contacts::list_by_company_domain(&pool, "jasper.ai")
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|c| c.email.is_some())
+        .expect("jasper.ai contact from sync-csv");
+    let email = prospecting_agent::workflows::outreach::generate_email(
+        &pool,
+        &memory,
+        &llm,
+        &prospecting_agent::llm::default_policies(),
+        &prospecting_agent::config::MessagingRules::default(),
+        &contact,
+        prospecting_agent::workflows::outreach::EmailContext {
+            step: 1,
+            max_steps: 3,
+            is_first_touch: true,
+        },
+    )
+    .await
+    .unwrap();
+    eprintln!("live subject: {}", email.subject);
+    eprintln!("live body:\n{}", email.body_text);
+    eprintln!("live fact: {}", email.personalization_fact);
+    assert!(!email.subject.is_empty());
+    assert!(!email.body_text.is_empty());
+}
