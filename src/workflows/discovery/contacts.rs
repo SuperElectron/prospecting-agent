@@ -7,7 +7,8 @@ use crate::config::IcpCriteria;
 use crate::db;
 use crate::domain::Seniority;
 use crate::memory::MemoryClient;
-use crate::workflows::sync::{SyncError, ingest_person};
+use crate::workflows::discovery::DiscoveryError;
+use crate::workflows::sync::ingest_person;
 
 #[derive(Debug, Clone, Copy)]
 pub struct DiscoveryBudget {
@@ -71,7 +72,7 @@ pub async fn discover_contacts(
     domain: &str,
     budget: &DiscoveryBudget,
     credits_left: &mut u16,
-) -> Result<DiscoveryReport, SyncError> {
+) -> Result<DiscoveryReport, DiscoveryError> {
     let mut report = DiscoveryReport::default();
     let params = PeopleSearchParams {
         organization_domains: vec![domain.to_string()],
@@ -137,7 +138,7 @@ async fn land_person(
     candidate_id: &str,
     person: &crate::clients::ApolloPerson,
     report: &mut DiscoveryReport,
-) -> Result<(), SyncError> {
+) -> Result<(), DiscoveryError> {
     let Some(email) = usable_email(person.email.as_deref()) else {
         report.no_email += 1;
         return Ok(());
@@ -168,7 +169,7 @@ pub async fn source_contacts(
     icp: &IcpCriteria,
     domains: &[String],
     budget: &DiscoveryBudget,
-) -> Result<DiscoveryReport, SyncError> {
+) -> Result<DiscoveryReport, DiscoveryError> {
     let mut total = DiscoveryReport::default();
     let mut credits_left = budget.max_credits_per_run;
     for domain in domains {

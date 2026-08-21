@@ -46,13 +46,9 @@ pub async fn research_company(
     db::companies::upsert_enrichment(pool, &updated).await?;
     let entity = EntityRef::company(&domain);
     let line = format!("[RESEARCH] {}", research.summary);
-    if let Err(e) = memory.memorize(&entity, &line, false).await {
-        tracing::warn!(domain, error = %e, "research summary memorize failed");
-    }
+    crate::workflows::util::best_effort_memorize(memory, &entity, &line).await;
     for angle in &research.personalization_angles {
-        if let Err(e) = memory.memorize(&entity, &format!("[ANGLE] {angle}"), false).await {
-            tracing::warn!(domain, error = %e, "personalization angle memorize failed");
-        }
+        crate::workflows::util::best_effort_memorize(memory, &entity, &format!("[ANGLE] {angle}")).await;
     }
     let sources = results.results.iter().map(|r| r.url.clone()).collect();
     Ok(ResearchOutcome {

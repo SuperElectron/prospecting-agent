@@ -5,7 +5,7 @@ use crate::clients::apollo::ApolloPerson;
 use crate::clients::{company_from_organization, contact_from_person};
 use crate::db;
 use crate::domain::Signal;
-use crate::memory::{EntityRef, MemoryClient, MemoryError};
+use crate::memory::{EntityRef, MemoryClient};
 use crate::workflows::sync::SyncError;
 
 pub async fn ingest_person(
@@ -19,7 +19,7 @@ pub async fn ingest_person(
         db::companies::upsert_enrichment(pool, &company).await?;
     }
     let line = enrichment_line(contact.title.as_deref(), contact.company_domain.as_deref());
-    best_effort_memorize(memory, &EntityRef::Contact(contact_id), &line).await;
+    crate::workflows::util::best_effort_memorize(memory, &EntityRef::Contact(contact_id), &line).await;
     Ok(contact_id)
 }
 
@@ -31,7 +31,8 @@ pub async fn ingest_signal(pool: &PgPool, memory: &MemoryClient, signal: &Signal
         strength = signal_strength_label(signal),
         summary = signal.summary,
     );
-    best_effort_memorize(memory, &EntityRef::company(&signal.company_domain), &line).await;
+    crate::workflows::util::best_effort_memorize(memory, &EntityRef::company(&signal.company_domain), &line)
+        .await;
     Ok(())
 }
 
@@ -40,18 +41,6 @@ fn enrichment_line(title: Option<&str>, company_domain: Option<&str>) -> String 
     match company_domain {
         Some(domain) => format!("[ENRICHED apollo] {title} at {domain}"),
         None => format!("[ENRICHED apollo] {title}"),
-    }
-}
-
-async fn best_effort_memorize(memory: &MemoryClient, entity: &EntityRef, line: &str) {
-    match memory.memorize(entity, line, false).await {
-        Ok(()) => {}
-        Err(MemoryError::Backend(reason)) => {
-            tracing::warn!(entity = %entity, reason, "memory backend rejected enrichment line");
-        }
-        Err(other) => {
-            tracing::warn!(entity = %entity, error = %other, "memorize failed for enrichment line");
-        }
     }
 }
 

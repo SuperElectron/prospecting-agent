@@ -5,7 +5,7 @@ use prospecting_agent::db;
 use prospecting_agent::domain::{Channel, EngagementKind, Signal, SignalKind, SignalStrength};
 use prospecting_agent::memory::MemoryClient;
 use prospecting_agent::workflows::sync::{RowSkip, SkipKind, ingest_person, ingest_signal, sync_dir};
-use wiremock::matchers::{body_partial_json, method, path};
+use wiremock::matchers::{body_partial_json, body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn test_pool() -> Option<sqlx::PgPool> {
@@ -298,6 +298,13 @@ async fn apollo_person_ingest_lands_contact_company_and_memory_line() {
 async fn signal_ingest_is_idempotent_and_memorizes_a_tagged_line() {
     let pool = require_pool!();
     let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/memories/"))
+        .and(body_string_contains("[SIGNAL"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "m"})))
+        .expect(1..)
+        .mount(&server)
+        .await;
     mount_memorize_ok(&server).await;
     let domain = unique_domain("sig");
     let signal = Signal::new(&domain, SignalKind::Funding, SignalStrength::Strong, "raised B");
@@ -449,7 +456,12 @@ async fn contact_enrichment_marks_new_contacts_enriched() {
         )
         .mount(&apollo_server)
         .await;
-    let mut credits: u16 = 500;
+    Mock::given(method("POST"))
+        .and(path("/v1/people/match"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"person": null})))
+        .mount(&apollo_server)
+        .await;
+    let mut credits: u16 = 5000;
     let report = prospecting_agent::workflows::discovery::enrich_contacts(
         &pool,
         &memory_client(&memory_server),
@@ -613,8 +625,13 @@ async fn company_enrichment_preserves_scoring_state() {
     assert_eq!(after.industry.as_deref(), Some("Software"));
     assert_eq!(after.summary.as_deref(), Some("Makes tools"));
 
-    let listed = db::companies::list_unenriched(&pool, 500).await.unwrap();
-    assert!(listed.iter().all(|c| c.domain != domain));
+    let attempted: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT enrichment_attempted_at FROM companies WHERE domain = $1")
+            .bind(&domain)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(attempted.is_some());
 }
 
 fn tavily_client(server: &MockServer) -> prospecting_agent::clients::TavilyClient {
@@ -643,6 +660,13 @@ async fn company_research_updates_summary_and_memorizes_angles() {
     let tavily_server = MockServer::start().await;
     let llm_server = MockServer::start().await;
     let memory_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/memories/"))
+        .and(body_string_contains("[ANGLE] their new release"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "m"})))
+        .expect(1)
+        .mount(&memory_server)
+        .await;
     mount_memorize_ok(&memory_server).await;
     let domain = unique_domain("research");
     let company = prospecting_agent::domain::Company::new(&domain);
@@ -994,6 +1018,8 @@ async fn account_strategy_persists_assessment_from_db_context() {
     db::contacts::upsert(&pool, &contact).await.unwrap();
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
+        .and(body_string_contains("Austin devtools company"))
+        .and(body_string_contains(contact.email.as_deref().unwrap()))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
                 "stage": "engaged",
@@ -1503,5 +1529,76 @@ async fn weekly_report_counts_recent_activity() {
     assert!(report.emails_sent >= 1);
     assert!(report.replies >= 1);
     assert!(report.contacts_added >= 1);
-    assert!(report.render().contains("emails sent"));
+    let rendered = report.render();
+    assert!(rendered.contains(&format!("{} emails sent", report.emails_sent)));
+    assert!(rendered.contains(&format!("{} replies", report.replies)));
+    assert!(rendered.contains(&format!("{} sequences stopped", report.sequences_stopped)));
+}
+
+#[tokio::test]
+async fn company_enrichment_failure_still_marks_the_attempt() {
+    let pool = require_pool!();
+    let apollo_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    mount_memorize_ok(&memory_server).await;
+    let domain = unique_domain("enrfail");
+    let company = prospecting_agent::domain::Company::new(&domain);
+    db::companies::upsert(&pool, &company).await.unwrap();
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/enrich"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&apollo_server)
+        .await;
+    let mut credits: u16 = 5000;
+    let report = prospecting_agent::workflows::discovery::enrich_companies(
+        &pool,
+        &memory_client(&memory_server),
+        &apollo_client(&apollo_server),
+        10_000,
+        &mut credits,
+    )
+    .await
+    .unwrap();
+    assert!(report.failed >= 1);
+    let attempted: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT enrichment_attempted_at FROM companies WHERE domain = $1")
+            .bind(&domain)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(attempted.is_some());
+    let listed = db::companies::list_unenriched(&pool, 100_000).await.unwrap();
+    assert!(listed.iter().all(|c| c.domain != domain));
+}
+
+#[tokio::test]
+async fn contact_enrichment_error_leaves_the_contact_new_and_counts_the_failure() {
+    let pool = require_pool!();
+    let apollo_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    mount_memorize_ok(&memory_server).await;
+    let domain = unique_domain("enrerr");
+    let email = format!("err-{}@{domain}", uuid::Uuid::new_v4().simple());
+    let mut contact = prospecting_agent::domain::Contact::new(prospecting_agent::domain::ContactSource::Csv);
+    contact.email = Some(email.clone());
+    db::contacts::upsert(&pool, &contact).await.unwrap();
+    Mock::given(method("POST"))
+        .and(path("/v1/people/match"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&apollo_server)
+        .await;
+    let mut credits: u16 = 5000;
+    let report = prospecting_agent::workflows::discovery::enrich_contacts(
+        &pool,
+        &memory_client(&memory_server),
+        &apollo_client(&apollo_server),
+        10_000,
+        &mut credits,
+    )
+    .await
+    .unwrap();
+    assert!(report.failed >= 1);
+    assert!(report.credits_spent >= 1);
+    let after = db::contacts::by_email(&pool, &email).await.unwrap().unwrap();
+    assert_eq!(after.status, prospecting_agent::domain::ContactStatus::New);
 }

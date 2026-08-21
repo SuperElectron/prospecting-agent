@@ -1,7 +1,7 @@
 use serde::Serialize;
 use sqlx::{PgPool, Row};
 
-use crate::db::DbError;
+use crate::workflows::reporting::ReportError;
 
 #[derive(Debug, Default, PartialEq, Eq, Serialize)]
 pub struct WeeklyReport {
@@ -31,7 +31,7 @@ impl WeeklyReport {
     }
 }
 
-pub async fn weekly_report(pool: &PgPool, window_days: i32) -> Result<WeeklyReport, DbError> {
+pub async fn weekly_report(pool: &PgPool, window_days: i32) -> Result<WeeklyReport, ReportError> {
     let days = window_days.max(1);
     let row = sqlx::query(
         "SELECT \
@@ -52,7 +52,8 @@ pub async fn weekly_report(pool: &PgPool, window_days: i32) -> Result<WeeklyRepo
     )
     .bind(days)
     .fetch_one(pool)
-    .await?;
+    .await
+    .map_err(crate::db::DbError::from)?;
     Ok(WeeklyReport {
         emails_sent: row.get("emails_sent"),
         replies: row.get("replies"),
