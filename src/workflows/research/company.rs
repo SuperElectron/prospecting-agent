@@ -5,9 +5,7 @@ use crate::clients::tavily::{SearchOptions, SearchResponse, TavilyClient};
 use crate::db;
 use crate::llm::{ChatMessage, CompanyResearch, LlmClient, Policy, inject};
 use crate::memory::{EntityRef, MemoryClient};
-use crate::workflows::research::ResearchError;
-
-const MAX_RESULT_CHARS: usize = 700;
+use crate::workflows::research::{ResearchError, UNTRUSTED_NOTE, truncated};
 
 #[derive(Debug, Serialize)]
 pub struct ResearchOutcome {
@@ -25,7 +23,7 @@ pub async fn research_company(
     domain: &str,
 ) -> Result<ResearchOutcome, ResearchError> {
     let domain = crate::domain::normalize_domain(domain);
-    let Some(mut company) = db::companies::by_domain(pool, &domain).await? else {
+    let Some(company) = db::companies::by_domain(pool, &domain).await? else {
         return Err(ResearchError::UnknownCompany(domain));
     };
     let display_name = company.name.clone().unwrap_or_else(|| domain.clone());
@@ -40,8 +38,12 @@ pub async fn research_company(
         ChatMessage::user(prompt),
     ];
     let research: CompanyResearch = llm.chat_structured(messages).await?;
-    company.summary = Some(research.summary.clone());
-    db::companies::upsert(pool, &company).await?;
+    let updated = crate::domain::Company {
+        summary: Some(research.summary.clone()),
+        updated_at: chrono::Utc::now(),
+        ..company
+    };
+    db::companies::upsert_enrichment(pool, &updated).await?;
     let entity = EntityRef::company(&domain);
     let line = format!("[RESEARCH] {}", research.summary);
     if let Err(e) = memory.memorize(&entity, &line, false).await {
@@ -63,25 +65,18 @@ pub async fn research_company(
 fn research_prompt(name: &str, domain: &str, results: &SearchResponse) -> String {
     let mut sections = vec![format!(
         "Research the company {name} ({domain}) for B2B sales outreach. \
-         Use only the web results below; do not invent facts."
+         Use only the web results below; do not invent facts. {UNTRUSTED_NOTE}"
     )];
     if let Some(answer) = &results.answer {
         sections.push(format!("Search summary: {answer}"));
     }
     for (index, result) in results.results.iter().enumerate() {
-        let mut content = result.content.clone();
-        if content.len() > MAX_RESULT_CHARS {
-            let mut cut = MAX_RESULT_CHARS;
-            while !content.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            content.truncate(cut);
-        }
         sections.push(format!(
-            "Result {n} — {title} ({url}): {content}",
+            "Result {n} — {title} ({url}):\n<web_result>\n{content}\n</web_result>",
             n = index + 1,
             title = result.title,
             url = result.url,
+            content = truncated(&result.content),
         ));
     }
     sections.join("\n\n")
@@ -91,6 +86,7 @@ fn research_prompt(name: &str, domain: &str, results: &SearchResponse) -> String
 mod tests {
     use super::*;
     use crate::clients::tavily::SearchResult;
+    use crate::workflows::research::MAX_RESULT_BYTES;
 
     #[test]
     fn prompt_carries_sources_and_truncates_on_char_boundaries() {
@@ -99,7 +95,7 @@ mod tests {
             results: vec![SearchResult {
                 title: "Funding".into(),
                 url: "https://news.example.com/a".into(),
-                content: "é".repeat(MAX_RESULT_CHARS),
+                content: "é".repeat(MAX_RESULT_BYTES),
                 score: 0.9,
                 published_date: None,
             }],

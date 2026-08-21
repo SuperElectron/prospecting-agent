@@ -597,12 +597,12 @@ async fn company_enrichment_preserves_scoring_state() {
         .expect(1)
         .mount(&apollo_server)
         .await;
-    let mut credits: u16 = 500;
+    let mut credits: u16 = 5000;
     let report = prospecting_agent::workflows::discovery::enrich_companies(
         &pool,
         &memory_client(&memory_server),
         &apollo_client(&apollo_server),
-        200,
+        10_000,
         &mut credits,
     )
     .await
@@ -688,6 +688,169 @@ async fn company_research_updates_summary_and_memorizes_angles() {
 }
 
 #[tokio::test]
+async fn research_preserves_enrichment_fields_and_bumps_updated_at() {
+    let pool = require_pool!();
+    let tavily_server = MockServer::start().await;
+    let llm_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    mount_memorize_ok(&memory_server).await;
+    let domain = unique_domain("keepres");
+    let mut company = prospecting_agent::domain::Company::new(&domain);
+    company.industry = Some("Software".into());
+    company.employee_count = Some(64);
+    company.icp_fit_score = Some(83);
+    db::companies::upsert(&pool, &company).await.unwrap();
+    let before = db::companies::by_domain(&pool, &domain).await.unwrap().unwrap();
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "answer": null,
+            "results": [{"title": "t", "url": "https://r.example.com", "content": "c",
+                         "score": 0.5, "published_date": null}],
+        })))
+        .mount(&tavily_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
+                "summary": "fresh summary",
+                "buying_signals": [],
+                "pain_points": [],
+                "personalization_angles": [],
+            }))),
+        )
+        .mount(&llm_server)
+        .await;
+    prospecting_agent::workflows::research::research_company(
+        &pool,
+        &memory_client(&memory_server),
+        &tavily_client(&tavily_server),
+        &llm_client(&llm_server),
+        &[],
+        &domain,
+    )
+    .await
+    .unwrap();
+    let after = db::companies::by_domain(&pool, &domain).await.unwrap().unwrap();
+    assert_eq!(after.industry.as_deref(), Some("Software"));
+    assert_eq!(after.employee_count, Some(64));
+    assert_eq!(after.icp_fit_score, Some(83));
+    assert_eq!(after.summary.as_deref(), Some("fresh summary"));
+    assert!(after.updated_at > before.updated_at);
+}
+
+#[tokio::test]
+async fn empty_news_results_skip_the_llm_entirely() {
+    let pool = require_pool!();
+    let tavily_server = MockServer::start().await;
+    let llm_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    let domain = unique_domain("nonews");
+    db::companies::upsert(&pool, &prospecting_agent::domain::Company::new(&domain))
+        .await
+        .unwrap();
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"answer": null, "results": []})),
+        )
+        .mount(&tavily_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&llm_server)
+        .await;
+    let report = prospecting_agent::workflows::research::detect_signals(
+        &pool,
+        &memory_client(&memory_server),
+        &tavily_client(&tavily_server),
+        &llm_client(&llm_server),
+        &[],
+        &domain,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.detected, 0);
+}
+
+#[tokio::test]
+async fn memory_outage_does_not_fail_company_research() {
+    let pool = require_pool!();
+    let tavily_server = MockServer::start().await;
+    let llm_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/memories/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"error": "Memory client is not available"})),
+        )
+        .mount(&memory_server)
+        .await;
+    let domain = unique_domain("memout");
+    db::companies::upsert(&pool, &prospecting_agent::domain::Company::new(&domain))
+        .await
+        .unwrap();
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "answer": null,
+            "results": [{"title": "t", "url": "https://r.example.com", "content": "c",
+                         "score": 0.5, "published_date": null}],
+        })))
+        .mount(&tavily_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
+                "summary": "resilient summary",
+                "buying_signals": [],
+                "pain_points": [],
+                "personalization_angles": ["angle one"],
+            }))),
+        )
+        .mount(&llm_server)
+        .await;
+    let outcome = prospecting_agent::workflows::research::research_company(
+        &pool,
+        &memory_client(&memory_server),
+        &tavily_client(&tavily_server),
+        &llm_client(&llm_server),
+        &[],
+        &domain,
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.research.summary, "resilient summary");
+}
+
+#[tokio::test]
+async fn signal_detection_on_an_unknown_company_is_a_typed_error() {
+    let pool = require_pool!();
+    let tavily_server = MockServer::start().await;
+    let llm_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    let err = prospecting_agent::workflows::research::detect_signals(
+        &pool,
+        &memory_client(&memory_server),
+        &tavily_client(&tavily_server),
+        &llm_client(&llm_server),
+        &[],
+        &unique_domain("nosuch"),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        prospecting_agent::workflows::research::ResearchError::UnknownCompany(_)
+    ));
+}
+
+#[tokio::test]
 async fn research_on_an_unknown_company_is_a_typed_error() {
     let pool = require_pool!();
     let tavily_server = MockServer::start().await;
@@ -717,6 +880,9 @@ async fn signal_detection_maps_kinds_and_counts_unknowns() {
     let memory_server = MockServer::start().await;
     mount_memorize_ok(&memory_server).await;
     let domain = unique_domain("sigdet");
+    db::companies::upsert(&pool, &prospecting_agent::domain::Company::new(&domain))
+        .await
+        .unwrap();
     Mock::given(method("POST"))
         .and(path("/search"))
         .and(body_partial_json(serde_json::json!({"topic": "news"})))
@@ -761,7 +927,7 @@ async fn signal_detection_maps_kinds_and_counts_unknowns() {
 }
 
 #[tokio::test]
-#[ignore = "live research smoke: needs TEST_RESEARCH_LIVE, DGX LLM, tavily key, postgres, memory"]
+#[ignore = "live research smoke: needs TEST_RESEARCH_LIVE, DGX LLM, tavily key, postgres, memory, and the jasper.ai seed row (run sync-csv first)"]
 async fn live_company_research_end_to_end() {
     if std::env::var("TEST_RESEARCH_LIVE").is_err() {
         eprintln!("TEST_RESEARCH_LIVE not set; skipping live research smoke");
@@ -798,4 +964,5 @@ async fn live_company_research_end_to_end() {
         "live signals: detected {} ingested {} unknown {}",
         report.detected, report.ingested, report.unknown_kind
     );
+    assert!(report.detected >= report.ingested);
 }
