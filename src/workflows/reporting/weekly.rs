@@ -3,7 +3,7 @@ use sqlx::{PgPool, Row};
 
 use crate::db::DbError;
 
-#[derive(Debug, Default, Serialize, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
 pub struct WeeklyReport {
     pub emails_sent: i64,
     pub replies: i64,
@@ -12,6 +12,23 @@ pub struct WeeklyReport {
     pub companies_added: i64,
     pub signals_detected: i64,
     pub sequences_stopped: i64,
+}
+
+impl WeeklyReport {
+    pub fn render(&self) -> String {
+        format!(
+            "weekly report: {sent} emails sent, {replies} replies, {optouts} opt-outs, \
+             {contacts} contacts added, {companies} companies added, {signals} signals detected, \
+             {stopped} sequences stopped",
+            sent = self.emails_sent,
+            replies = self.replies,
+            optouts = self.opt_outs,
+            contacts = self.contacts_added,
+            companies = self.companies_added,
+            signals = self.signals_detected,
+            stopped = self.sequences_stopped,
+        )
+    }
 }
 
 pub async fn weekly_report(pool: &PgPool, window_days: i32) -> Result<WeeklyReport, DbError> {
@@ -30,7 +47,8 @@ pub async fn weekly_report(pool: &PgPool, window_days: i32) -> Result<WeeklyRepo
           AS companies_added, \
          (SELECT COUNT(*) FROM signals WHERE detected_at > now() - make_interval(days => $1)) \
           AS signals_detected, \
-         (SELECT COUNT(*) FROM sequence_states WHERE stopped = true) AS sequences_stopped",
+         (SELECT COUNT(*) FROM sequence_states WHERE stopped = true \
+          AND stopped_at > now() - make_interval(days => $1)) AS sequences_stopped",
     )
     .bind(days)
     .fetch_one(pool)
@@ -44,23 +62,6 @@ pub async fn weekly_report(pool: &PgPool, window_days: i32) -> Result<WeeklyRepo
         signals_detected: row.get("signals_detected"),
         sequences_stopped: row.get("sequences_stopped"),
     })
-}
-
-impl WeeklyReport {
-    pub fn render(&self) -> String {
-        format!(
-            "weekly report: {sent} emails sent, {replies} replies, {optouts} opt-outs, \
-             {contacts} contacts added, {companies} companies added, {signals} signals detected, \
-             {stopped} sequences stopped",
-            sent = self.emails_sent,
-            replies = self.replies,
-            optouts = self.opt_outs,
-            contacts = self.contacts_added,
-            companies = self.companies_added,
-            signals = self.signals_detected,
-            stopped = self.sequences_stopped,
-        )
-    }
 }
 
 #[cfg(test)]

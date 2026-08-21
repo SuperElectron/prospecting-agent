@@ -1337,6 +1337,22 @@ async fn rule_violation_recovers_on_retry_with_the_draft_in_the_prompt() {
     assert_eq!(email.subject, "clean subject");
 }
 
+#[derive(Clone, Default)]
+struct SpyNotifier(
+    std::sync::Arc<std::sync::Mutex<Vec<(prospecting_agent::connectors::NotifyLevel, String)>>>,
+);
+
+impl prospecting_agent::connectors::Notifier for SpyNotifier {
+    async fn notify(
+        &self,
+        level: prospecting_agent::connectors::NotifyLevel,
+        message: &str,
+    ) -> Result<(), prospecting_agent::connectors::ConnectorError> {
+        self.0.lock().unwrap().push((level, message.to_string()));
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn interested_reply_updates_status_stops_sequence_and_notifies() {
     let pool = require_pool!();
@@ -1363,12 +1379,13 @@ async fn interested_reply_updates_status_stops_sequence_and_notifies() {
         .expect(1)
         .mount(&llm_server)
         .await;
+    let spy = SpyNotifier::default();
     let outcome = prospecting_agent::workflows::analysis::analyze_reply(
         &pool,
         &memory_client(&memory_server),
         &llm_client(&llm_server),
         &prospecting_agent::llm::default_policies(),
-        &prospecting_agent::connectors::LogNotifier,
+        &spy,
         &contact,
         prospecting_agent::workflows::analysis::InboundReply {
             subject: Some("Re: quick question"),
@@ -1382,6 +1399,17 @@ async fn interested_reply_updates_status_stops_sequence_and_notifies() {
         prospecting_agent::domain::ContactStatus::Replied
     );
     assert!(outcome.sequence_stopped);
+    assert!(outcome.reply_recorded);
+    assert!(outcome.notified);
+    {
+        let notifications = spy.0.lock().unwrap();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(
+            notifications[0].0,
+            prospecting_agent::connectors::NotifyLevel::Info
+        );
+        assert!(notifications[0].1.contains("Interested"));
+    }
     let contact_after = db::contacts::by_id(&pool, contact.id).await.unwrap().unwrap();
     assert_eq!(
         contact_after.status,
@@ -1423,12 +1451,13 @@ async fn opt_out_reply_disqualifies_and_stops_with_opted_out() {
         )
         .mount(&llm_server)
         .await;
+    let opt_out_spy = SpyNotifier::default();
     let outcome = prospecting_agent::workflows::analysis::analyze_reply(
         &pool,
         &memory_client(&memory_server),
         &llm_client(&llm_server),
         &[],
-        &prospecting_agent::connectors::LogNotifier,
+        &opt_out_spy,
         &contact,
         prospecting_agent::workflows::analysis::InboundReply {
             subject: None,
@@ -1441,6 +1470,8 @@ async fn opt_out_reply_disqualifies_and_stops_with_opted_out() {
         outcome.new_status,
         prospecting_agent::domain::ContactStatus::OptedOut
     );
+    assert!(!outcome.notified);
+    assert!(opt_out_spy.0.lock().unwrap().is_empty());
     let sequence = db::sequences::for_contact(&pool, contact.id)
         .await
         .unwrap()
