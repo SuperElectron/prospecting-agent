@@ -48,28 +48,32 @@ pub async fn generate_email(
     };
     let account_memory = match contact.company_domain.as_deref() {
         Some(domain) => {
-            let entity = EntityRef::company(domain);
-            let items = memory
-                .recall("research angles signals", Some(&entity), 20)
-                .await?;
-            digest(&items, MEMORY_DIGEST_TOKENS)
+            best_effort_digest(memory, &EntityRef::company(domain), "research angles signals", 20).await
         }
         None => String::new(),
     };
-    let contact_memory = {
-        let entity = EntityRef::Contact(contact.id);
-        let items = memory
-            .recall("enrichment replies history", Some(&entity), 10)
-            .await?;
-        digest(&items, MEMORY_DIGEST_TOKENS)
-    };
-    let prior = db::engagements::for_contact(pool, contact.id, 20).await?;
-    let prior_subjects: Vec<String> = prior
-        .iter()
-        .filter(|e| e.direction == Direction::Outbound)
-        .filter_map(|e| e.subject.clone())
-        .take(PRIOR_EMAILS_SHOWN)
-        .collect();
+    let contact_memory = best_effort_digest(
+        memory,
+        &EntityRef::Contact(contact.id),
+        "enrichment replies history",
+        10,
+    )
+    .await;
+    let prior_engagements = db::engagements::for_contact(pool, contact.id, 20).await?;
+    let mut prior_subjects: Vec<String> = Vec::new();
+    for engagement in &prior_engagements {
+        if engagement.direction != Direction::Outbound {
+            continue;
+        }
+        if let Some(subject) = &engagement.subject
+            && !prior_subjects.contains(subject)
+        {
+            prior_subjects.push(subject.clone());
+            if prior_subjects.len() >= PRIOR_EMAILS_SHOWN {
+                break;
+            }
+        }
+    }
     let base_prompt = generation_prompt(
         contact,
         context,
@@ -81,30 +85,56 @@ pub async fn generate_email(
     );
     let system = ChatMessage::system(inject(policies, "outreach email voice playbook messaging"));
     let mut last_violations = Vec::new();
+    let mut last_draft = String::new();
     for attempt in 0..GENERATION_ATTEMPTS {
         let prompt = if attempt == 0 {
             base_prompt.clone()
         } else {
+            let described: Vec<String> = last_violations.iter().map(describe_violation).collect();
             format!(
-                "{base_prompt}\n\nThe previous draft violated these rules: {last_violations:?}. \
-                 Rewrite to satisfy every rule."
+                "{base_prompt}\n\nYour previous draft:\n{last_draft}\n\nIt violated these rules: \
+                 {rules_broken}. Rewrite to satisfy every rule.",
+                rules_broken = described.join("; ")
             )
         };
         let messages = vec![system.clone(), ChatMessage::user(prompt)];
         let draft: OutreachEmail = llm.chat_structured(messages).await?;
         let violations = rules.check(&draft.body, context.is_first_touch);
         if violations.is_empty() {
+            let body_html = render_html(&draft.body);
             return Ok(GeneratedEmail {
-                body_html: render_html(&draft.body),
                 subject: draft.subject,
                 body_text: draft.body,
+                body_html,
                 personalization_fact: draft.personalization_fact,
                 step: context.step,
             });
         }
         last_violations = violations;
+        last_draft = draft.body;
     }
     Err(OutreachError::RulesViolated(last_violations))
+}
+
+async fn best_effort_digest(memory: &MemoryClient, entity: &EntityRef, query: &str, limit: usize) -> String {
+    match memory.recall(query, Some(entity), limit).await {
+        Ok(items) => digest(&items, MEMORY_DIGEST_TOKENS),
+        Err(e) => {
+            tracing::warn!(entity = %entity, error = %e, "memory recall unavailable for generation");
+            String::new()
+        }
+    }
+}
+
+fn describe_violation(violation: &crate::config::MessagingViolation) -> String {
+    use crate::config::MessagingViolation;
+    match violation {
+        MessagingViolation::TooLong { words, max } => {
+            format!("the draft is {words} words; the limit is {max}")
+        }
+        MessagingViolation::BannedPhrase(phrase) => format!("the phrase {phrase:?} is banned"),
+        MessagingViolation::BannedOpener(opener) => format!("the opener {opener:?} is banned"),
+    }
 }
 
 fn generation_prompt(

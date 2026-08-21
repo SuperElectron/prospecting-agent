@@ -1283,3 +1283,56 @@ async fn live_email_generation_end_to_end() {
     assert!(!email.subject.is_empty());
     assert!(!email.body_text.is_empty());
 }
+
+#[tokio::test]
+async fn rule_violation_recovers_on_retry_with_the_draft_in_the_prompt() {
+    let pool = require_pool!();
+    let llm_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    mount_recall_empty(&memory_server).await;
+    let mut contact = prospecting_agent::domain::Contact::new(prospecting_agent::domain::ContactSource::Csv);
+    contact.email = Some("retry@example.com".into());
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
+                "subject": "s",
+                "body": "Let's leverage synergy here.",
+                "personalization_fact": "f",
+            }))),
+        )
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&llm_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(wiremock::matchers::body_string_contains("previous draft"))
+        .and(wiremock::matchers::body_string_contains("synergy"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
+                "subject": "clean subject",
+                "body": "Saw your launch. Worth a quick chat?",
+                "personalization_fact": "their launch",
+            }))),
+        )
+        .expect(1)
+        .mount(&llm_server)
+        .await;
+    let email = prospecting_agent::workflows::outreach::generate_email(
+        &pool,
+        &memory_client(&memory_server),
+        &llm_client(&llm_server),
+        &[],
+        &prospecting_agent::config::MessagingRules::default(),
+        &contact,
+        prospecting_agent::workflows::outreach::EmailContext {
+            step: 1,
+            max_steps: 3,
+            is_first_touch: true,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(email.subject, "clean subject");
+}
