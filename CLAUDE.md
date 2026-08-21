@@ -21,6 +21,8 @@ Every issue created in this repo MUST use this body structure, in this order:
 One issue per feature group. Add each issue to the project board
 (https://github.com/users/SuperElectron/projects/4/views/1). Close via its PR merge into staging
 (manual close with comment — auto-close only fires on default-branch merges).
+Before closing an issue, edit its body so every completed Tasklist item is checked (`- [x]`);
+never close an issue with unchecked boxes for work that was done.
 
 ## Workflow
 - `main` ← `staging` ← `feature/*`. One PR per feature group. Never commit directly to staging/main.
