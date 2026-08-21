@@ -135,6 +135,17 @@ pub async fn by_domain(pool: &PgPool, domain: &str) -> Result<Option<Company>, D
     row.as_ref().map(from_row).transpose()
 }
 
+pub async fn list_unenriched(pool: &PgPool, limit: i64) -> Result<Vec<Company>, DbError> {
+    let rows = sqlx::query(
+        "SELECT * FROM companies WHERE industry IS NULL OR employee_count IS NULL OR summary IS NULL \
+         ORDER BY updated_at ASC LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    rows.iter().map(from_row).collect()
+}
+
 pub async fn list_recent(pool: &PgPool, limit: i64) -> Result<Vec<Company>, DbError> {
     let rows = sqlx::query("SELECT * FROM companies ORDER BY updated_at DESC LIMIT $1")
         .bind(limit)

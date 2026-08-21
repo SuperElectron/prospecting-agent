@@ -306,3 +306,158 @@ async fn signal_ingest_is_idempotent_and_memorizes_a_tagged_line() {
     let found = db::signals::for_domain(&pool, &domain, 10).await.unwrap();
     assert_eq!(found.len(), 1);
 }
+
+fn apollo_client(server: &MockServer) -> prospecting_agent::clients::ApolloClient {
+    prospecting_agent::clients::ApolloClient::with_base_url(
+        prospecting_agent::config::Secret::new("apollo-test"),
+        &server.uri(),
+    )
+}
+
+fn search_person_json(id: &str, domain: &str) -> serde_json::Value {
+    serde_json::json!({"id": id, "first_name": "Obfuscated", "title": "VP Sales",
+        "organization": {"id": "o-1", "primary_domain": domain}})
+}
+
+fn matched_person_json(id: &str, email: &str, domain: &str) -> serde_json::Value {
+    serde_json::json!({"id": id, "first_name": "Jane", "title": "VP Sales", "email": email,
+        "seniority": "vp", "organization": {"id": "o-1", "primary_domain": domain,
+        "estimated_num_employees": 90}})
+}
+
+#[tokio::test]
+async fn discovery_matches_new_people_and_skips_known_crm_ids() {
+    let pool = require_pool!();
+    let apollo_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    mount_memorize_ok(&memory_server).await;
+    let domain = unique_domain("disc");
+    let known_id = format!("known-{}", uuid::Uuid::new_v4().simple());
+    let fresh_id = format!("fresh-{}", uuid::Uuid::new_v4().simple());
+    let email = format!("vp-{}@{domain}", uuid::Uuid::new_v4().simple());
+
+    let mut known = prospecting_agent::domain::Contact::new(prospecting_agent::domain::ContactSource::Apollo);
+    known.crm_id = Some(known_id.clone());
+    db::contacts::upsert(&pool, &known).await.unwrap();
+
+    Mock::given(method("POST"))
+        .and(path("/v1/mixed_people/api_search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "people": [search_person_json(&known_id, &domain), search_person_json(&fresh_id, &domain)],
+            "total_entries": 2,
+        })))
+        .expect(1)
+        .mount(&apollo_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/people/match"))
+        .and(body_partial_json(serde_json::json!({"id": fresh_id})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"person": matched_person_json(&fresh_id, &email, &domain)}),
+            ),
+        )
+        .expect(1)
+        .mount(&apollo_server)
+        .await;
+
+    let icp = prospecting_agent::config::IcpCriteria::default();
+    let budget = prospecting_agent::workflows::discovery::DiscoveryBudget::default();
+    let mut credits = budget.max_credits_per_run;
+    let report = prospecting_agent::workflows::discovery::discover_contacts(
+        &pool,
+        &memory_client(&memory_server),
+        &apollo_client(&apollo_server),
+        &icp,
+        &domain,
+        &budget,
+        &mut credits,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.discovered, 1);
+    assert_eq!(report.already_known, 1);
+    assert_eq!(report.credits_spent, 1);
+    let landed = db::contacts::by_email(&pool, &email).await.unwrap().unwrap();
+    assert_eq!(landed.status, prospecting_agent::domain::ContactStatus::Enriched);
+    assert_eq!(landed.crm_id.as_deref(), Some(fresh_id.as_str()));
+}
+
+#[tokio::test]
+async fn discovery_stops_when_the_credit_budget_runs_out() {
+    let pool = require_pool!();
+    let apollo_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    mount_memorize_ok(&memory_server).await;
+    let domain = unique_domain("budget");
+    let people: Vec<serde_json::Value> = (0..5)
+        .map(|i| search_person_json(&format!("cand-{}-{i}", uuid::Uuid::new_v4().simple()), &domain))
+        .collect();
+    Mock::given(method("POST"))
+        .and(path("/v1/mixed_people/api_search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "people": people, "total_entries": 5,
+        })))
+        .mount(&apollo_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/people/match"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"person": null})))
+        .expect(2)
+        .mount(&apollo_server)
+        .await;
+    let icp = prospecting_agent::config::IcpCriteria::default();
+    let budget = prospecting_agent::workflows::discovery::DiscoveryBudget {
+        contacts_per_account: 5,
+        max_credits_per_run: 2,
+    };
+    let mut credits = budget.max_credits_per_run;
+    let report = prospecting_agent::workflows::discovery::discover_contacts(
+        &pool,
+        &memory_client(&memory_server),
+        &apollo_client(&apollo_server),
+        &icp,
+        &domain,
+        &budget,
+        &mut credits,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.credits_spent, 2);
+    assert_eq!(credits, 0);
+    assert_eq!(report.no_email, 2);
+}
+
+#[tokio::test]
+async fn contact_enrichment_marks_new_contacts_enriched() {
+    let pool = require_pool!();
+    let apollo_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    mount_memorize_ok(&memory_server).await;
+    let domain = unique_domain("enr");
+    let email = format!("new-{}@{domain}", uuid::Uuid::new_v4().simple());
+    let mut contact = prospecting_agent::domain::Contact::new(prospecting_agent::domain::ContactSource::Csv);
+    contact.email = Some(email.clone());
+    db::contacts::upsert(&pool, &contact).await.unwrap();
+    Mock::given(method("POST"))
+        .and(path("/v1/people/match"))
+        .and(body_partial_json(serde_json::json!({"email": email})))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"person": matched_person_json("p-enr", &email, &domain)})),
+        )
+        .mount(&apollo_server)
+        .await;
+    let report = prospecting_agent::workflows::discovery::enrich_contacts(
+        &pool,
+        &memory_client(&memory_server),
+        &apollo_client(&apollo_server),
+        500,
+    )
+    .await
+    .unwrap();
+    assert!(report.enriched >= 1);
+    let after = db::contacts::by_email(&pool, &email).await.unwrap().unwrap();
+    assert_eq!(after.status, prospecting_agent::domain::ContactStatus::Enriched);
+    assert_eq!(after.seniority, Some(prospecting_agent::domain::Seniority::Vp));
+}

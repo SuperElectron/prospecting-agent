@@ -167,6 +167,14 @@ pub async fn by_id(pool: &PgPool, id: Uuid) -> Result<Option<Contact>, DbError> 
     row.as_ref().map(from_row).transpose()
 }
 
+pub async fn by_crm_id(pool: &PgPool, crm_id: &str) -> Result<Option<Contact>, DbError> {
+    let row = sqlx::query("SELECT * FROM contacts WHERE crm_id = $1")
+        .bind(crm_id)
+        .fetch_optional(pool)
+        .await?;
+    row.as_ref().map(from_row).transpose()
+}
+
 pub async fn by_email(pool: &PgPool, email: &str) -> Result<Option<Contact>, DbError> {
     let row = sqlx::query("SELECT * FROM contacts WHERE email = $1")
         .bind(email)
