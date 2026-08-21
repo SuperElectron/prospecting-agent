@@ -234,19 +234,29 @@ pub fn save_senders(path: &str, senders: &[SenderAccount]) -> Result<(), Connect
         path: path.to_string(),
         reason,
     };
-    std::fs::write(path, raw).map_err(|e| credentials_error(e.to_string()))?;
-    restrict_to_owner(path).map_err(|e| credentials_error(e.to_string()))
+    write_owner_only(path, raw.as_bytes()).map_err(|e| credentials_error(e.to_string()))
 }
 
 #[cfg(unix)]
-fn restrict_to_owner(path: &str) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+fn write_owner_only(path: &str, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(contents)?;
+    std::fs::set_permissions(path, {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::Permissions::from_mode(0o600)
+    })
 }
 
 #[cfg(not(unix))]
-fn restrict_to_owner(_path: &str) -> std::io::Result<()> {
-    Ok(())
+fn write_owner_only(path: &str, contents: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, contents)
 }
 
 fn urlencode(raw: &str) -> String {

@@ -12,7 +12,7 @@ The complete local-first prospecting loop, reviewed and live-verified at every m
 - Credential files written owner-only (0600)
 
 ### Post-1.0 (tracked)
-- Slack notifier (M6), HubSpot sync (M6), HeyReach/LinkedIn (M6), jenticOne (M7), managed Mem0 (M8)
+- Slack notifier (M6), HubSpot sync (M6), HeyReach/LinkedIn (M6), jentic-one credential broker (M7, per the wiki Development-Plan), managed Mem0 (M8)
 - Full-body reply fetch before trusting opt-out classification (#54); injectable job clock + send-pass scoping (#62); preflight Modify reachability (#51); enrichment cooldown asymmetry (#49)
 
 
