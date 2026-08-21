@@ -22,7 +22,7 @@
 
   <rect x="710" y="110" width="120" height="36" class="ext"/><text x="725" y="133">Apollo</text>
   <rect x="710" y="160" width="120" height="36" class="ext"/><text x="725" y="183">Tavily</text>
-  <rect x="710" y="210" width="120" height="36" class="ext"/><text x="725" y="233">local LLM</text>
+  <rect x="710" y="210" width="120" height="36" class="ext"/><text x="725" y="233">LLM</text>
   <rect x="710" y="260" width="120" height="36" class="ext"/><text x="725" y="283">Gmail</text>
 
   <line x1="80" y1="60" x2="180" y2="110"/>

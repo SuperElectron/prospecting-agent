@@ -24,7 +24,7 @@ make silent skips fail there.
 ## Code rules
 
 - No code comments; the code and its tests carry the intent.
-- Files aim under 400 lines (~500 is the ceiling); split when a file grows.
+- Files aim under 400 lines (~500 is a guideline, not a hard cap); split when a file grows.
 - I/O behind traits; each module owns a thiserror enum with `#[from]` chains —
   never flatten errors to strings across a boundary.
 - No `#[allow]` escape hatches; fix the lint properly.
