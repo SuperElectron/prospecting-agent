@@ -3,27 +3,12 @@ use sqlx::PgPool;
 
 use crate::clients::apollo::{ApolloClient, PeopleSearchParams};
 use crate::clients::usable_email;
-use crate::config::IcpCriteria;
+use crate::config::{DiscoveryBudget, IcpCriteria};
 use crate::db;
 use crate::domain::Seniority;
 use crate::memory::MemoryClient;
 use crate::workflows::discovery::DiscoveryError;
 use crate::workflows::sync::ingest_person;
-
-#[derive(Debug, Clone, Copy)]
-pub struct DiscoveryBudget {
-    pub contacts_per_account: u8,
-    pub max_credits_per_run: u16,
-}
-
-impl Default for DiscoveryBudget {
-    fn default() -> Self {
-        Self {
-            contacts_per_account: 3,
-            max_credits_per_run: 15,
-        }
-    }
-}
 
 #[derive(Debug, Default, Serialize)]
 pub struct DiscoveryReport {

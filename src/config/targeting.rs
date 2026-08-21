@@ -20,6 +20,21 @@ pub struct IcpCriteria {
     pub weights: ScoreWeights,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiscoveryBudget {
+    pub contacts_per_account: u8,
+    pub max_credits_per_run: u16,
+}
+
+impl Default for DiscoveryBudget {
+    fn default() -> Self {
+        Self {
+            contacts_per_account: 3,
+            max_credits_per_run: 15,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScoreWeights {
     pub icp_fit: u8,

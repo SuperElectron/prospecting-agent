@@ -1,7 +1,8 @@
 pub mod contacts;
 pub mod enrich;
 
-pub use contacts::{DiscoveryBudget, DiscoveryReport, discover_contacts};
+pub use crate::config::DiscoveryBudget;
+pub use contacts::{DiscoveryReport, discover_contacts};
 pub use enrich::{EnrichmentReport, enrich_companies, enrich_contacts};
 
 #[derive(Debug, thiserror::Error)]
