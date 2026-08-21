@@ -6,7 +6,7 @@ pub mod secret;
 pub mod targeting;
 
 pub use cadence::{Cadence, CadenceError, SendHours};
-pub use env::{AppConfig, ConfigError, EmailProvider};
+pub use env::{AppConfig, ConfigError, EmailProvider, MemoryConfig};
 pub use messaging::{MessagingRules, MessagingViolation};
 pub use modes::AgentMode;
 pub use secret::Secret;

@@ -19,7 +19,7 @@ pub enum ConfigError {
 pub struct AppConfig {
     pub database_url: Secret,
     pub llm: LlmConfig,
-    pub mem0_url: String,
+    pub memory: MemoryConfig,
     pub apollo_api_key: Secret,
     pub tavily_api_key: Secret,
     pub email: EmailConfig,
@@ -29,6 +29,12 @@ pub struct AppConfig {
     pub log_level: String,
     pub dry_run: bool,
     pub csv_data_dir: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryConfig {
+    pub base_url: String,
+    pub user: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,7 +94,12 @@ impl AppConfig {
                 api_key: get_or(env, "LLM_API_KEY", "local").into(),
                 model: required(env, "LLM_MODEL")?,
             },
-            mem0_url: required(env, "MEM0_URL")?,
+            memory: MemoryConfig {
+                base_url: optional(env, "MEMORY_URL")
+                    .or_else(|| optional(env, "MEM0_URL"))
+                    .ok_or(ConfigError::Missing("MEMORY_URL"))?,
+                user: get_or(env, "MEMORY_USER", "prospecting"),
+            },
             apollo_api_key: required(env, "APOLLO_API_KEY")?.into(),
             tavily_api_key: required(env, "TAVILY_API_KEY")?.into(),
             email,
@@ -239,7 +250,7 @@ mod tests {
             ("DATABASE_URL", "postgres://localhost/p"),
             ("LLM_BASE_URL", "http://localhost:8000/v1"),
             ("LLM_MODEL", "gpt-oss-120b"),
-            ("MEM0_URL", "http://localhost:8765"),
+            ("MEMORY_URL", "http://localhost:8765"),
             ("APOLLO_API_KEY", "ap-key"),
             ("TAVILY_API_KEY", "tv-key"),
             ("GMAIL_CLIENT_ID", "cid"),
