@@ -1336,3 +1336,172 @@ async fn rule_violation_recovers_on_retry_with_the_draft_in_the_prompt() {
     .unwrap();
     assert_eq!(email.subject, "clean subject");
 }
+
+#[derive(Clone, Default)]
+struct SpyNotifier(
+    std::sync::Arc<std::sync::Mutex<Vec<(prospecting_agent::connectors::NotifyLevel, String)>>>,
+);
+
+impl prospecting_agent::connectors::Notifier for SpyNotifier {
+    async fn notify(
+        &self,
+        level: prospecting_agent::connectors::NotifyLevel,
+        message: &str,
+    ) -> Result<(), prospecting_agent::connectors::ConnectorError> {
+        self.0.lock().unwrap().push((level, message.to_string()));
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn interested_reply_updates_status_stops_sequence_and_notifies() {
+    let pool = require_pool!();
+    let llm_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    mount_memorize_ok(&memory_server).await;
+    let domain = unique_domain("reply");
+    let mut contact = prospecting_agent::domain::Contact::new(prospecting_agent::domain::ContactSource::Csv);
+    contact.email = Some(format!("r-{}@{domain}", uuid::Uuid::new_v4().simple()));
+    contact.first_name = Some("Casey".into());
+    db::contacts::upsert(&pool, &contact).await.unwrap();
+    let state = prospecting_agent::domain::SequenceState::start(contact.id, "standard", 3);
+    db::sequences::upsert(&pool, &state).await.unwrap();
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
+                "intent": "interested",
+                "summary": "Wants a demo next week",
+                "suggested_action": "book a meeting",
+                "notify_rep": true,
+            }))),
+        )
+        .expect(1)
+        .mount(&llm_server)
+        .await;
+    let spy = SpyNotifier::default();
+    let outcome = prospecting_agent::workflows::analysis::analyze_reply(
+        &pool,
+        &memory_client(&memory_server),
+        &llm_client(&llm_server),
+        &prospecting_agent::llm::default_policies(),
+        &spy,
+        &contact,
+        prospecting_agent::workflows::analysis::InboundReply {
+            subject: Some("Re: quick question"),
+            body: "This looks interesting — can we talk next week?",
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        outcome.new_status,
+        prospecting_agent::domain::ContactStatus::Replied
+    );
+    assert!(outcome.sequence_stopped);
+    assert!(outcome.reply_recorded);
+    assert!(outcome.notified);
+    {
+        let notifications = spy.0.lock().unwrap();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(
+            notifications[0].0,
+            prospecting_agent::connectors::NotifyLevel::Info
+        );
+        assert!(notifications[0].1.contains("Interested"));
+    }
+    let contact_after = db::contacts::by_id(&pool, contact.id).await.unwrap().unwrap();
+    assert_eq!(
+        contact_after.status,
+        prospecting_agent::domain::ContactStatus::Replied
+    );
+    let sequence = db::sequences::for_contact(&pool, contact.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!sequence.is_active());
+    assert_eq!(
+        sequence.stop_reason,
+        Some(prospecting_agent::domain::StopReason::Replied)
+    );
+    let history = db::engagements::for_contact(&pool, contact.id, 10).await.unwrap();
+    assert!(history.iter().any(|e| e.kind == EngagementKind::Replied));
+}
+
+#[tokio::test]
+async fn opt_out_reply_disqualifies_and_stops_with_opted_out() {
+    let pool = require_pool!();
+    let llm_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    mount_memorize_ok(&memory_server).await;
+    let mut contact = prospecting_agent::domain::Contact::new(prospecting_agent::domain::ContactSource::Csv);
+    contact.email = Some(format!("opt-{}@x.example.com", uuid::Uuid::new_v4().simple()));
+    db::contacts::upsert(&pool, &contact).await.unwrap();
+    let state = prospecting_agent::domain::SequenceState::start(contact.id, "standard", 3);
+    db::sequences::upsert(&pool, &state).await.unwrap();
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
+                "intent": "opt_out",
+                "summary": "Asked to be removed",
+                "suggested_action": "remove from list",
+                "notify_rep": false,
+            }))),
+        )
+        .mount(&llm_server)
+        .await;
+    let opt_out_spy = SpyNotifier::default();
+    let outcome = prospecting_agent::workflows::analysis::analyze_reply(
+        &pool,
+        &memory_client(&memory_server),
+        &llm_client(&llm_server),
+        &[],
+        &opt_out_spy,
+        &contact,
+        prospecting_agent::workflows::analysis::InboundReply {
+            subject: None,
+            body: "Please remove me from your list.",
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        outcome.new_status,
+        prospecting_agent::domain::ContactStatus::OptedOut
+    );
+    assert!(!outcome.notified);
+    assert!(opt_out_spy.0.lock().unwrap().is_empty());
+    let sequence = db::sequences::for_contact(&pool, contact.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        sequence.stop_reason,
+        Some(prospecting_agent::domain::StopReason::OptedOut)
+    );
+}
+
+#[tokio::test]
+async fn weekly_report_counts_recent_activity() {
+    let pool = require_pool!();
+    let domain = unique_domain("weekly");
+    let mut contact = prospecting_agent::domain::Contact::new(prospecting_agent::domain::ContactSource::Csv);
+    contact.email = Some(format!("w-{}@{domain}", uuid::Uuid::new_v4().simple()));
+    contact.company_domain = Some(domain.clone());
+    db::contacts::upsert(&pool, &contact).await.unwrap();
+    let mut sent =
+        prospecting_agent::domain::Engagement::outbound(contact.id, Channel::Email, EngagementKind::Sent);
+    sent.sequence_step = Some(1);
+    db::engagements::insert(&pool, &sent).await.unwrap();
+    let inbound =
+        prospecting_agent::domain::Engagement::inbound(contact.id, Channel::Email, EngagementKind::Replied);
+    db::engagements::insert(&pool, &inbound).await.unwrap();
+    let report = prospecting_agent::workflows::reporting::weekly_report(&pool, 7)
+        .await
+        .unwrap();
+    assert!(report.emails_sent >= 1);
+    assert!(report.replies >= 1);
+    assert!(report.contacts_added >= 1);
+    assert!(report.render().contains("emails sent"));
+}

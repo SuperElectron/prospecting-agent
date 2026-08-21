@@ -76,6 +76,7 @@ pub struct SequenceState {
     pub last_sent_at: Option<DateTime<Utc>>,
     pub stopped: bool,
     pub stop_reason: Option<StopReason>,
+    pub stopped_at: Option<DateTime<Utc>>,
 }
 
 impl SequenceState {
@@ -88,6 +89,7 @@ impl SequenceState {
             last_sent_at: None,
             stopped: false,
             stop_reason: None,
+            stopped_at: None,
         }
     }
 
@@ -107,6 +109,7 @@ impl SequenceState {
     pub fn stop(&mut self, reason: StopReason) {
         self.stopped = true;
         self.stop_reason = Some(reason);
+        self.stopped_at = Some(Utc::now());
     }
 
     pub fn is_active(&self) -> bool {
