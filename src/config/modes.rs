@@ -58,7 +58,12 @@ pub fn registry() -> Vec<AgentMode> {
 }
 
 pub fn by_name(name: &str) -> Option<AgentMode> {
-    registry().into_iter().find(|m| m.name == name)
+    match name {
+        "conservative" => Some(AgentMode::conservative()),
+        "standard" => Some(AgentMode::standard()),
+        "aggressive" => Some(AgentMode::aggressive()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

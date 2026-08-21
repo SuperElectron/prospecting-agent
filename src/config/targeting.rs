@@ -42,6 +42,16 @@ impl Default for ScoreWeights {
 }
 
 impl IcpCriteria {
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.weights.is_valid() {
+            return Err("score weights must sum to 100".into());
+        }
+        if self.employee_range.0 > self.employee_range.1 {
+            return Err("employee range is inverted".into());
+        }
+        Ok(())
+    }
+
     pub fn company_size_fits(&self, employee_count: u32) -> bool {
         employee_count >= self.employee_range.0 && employee_count <= self.employee_range.1
     }
@@ -91,6 +101,24 @@ mod tests {
             champion_potential: 10,
         };
         assert!(!w.is_valid());
+    }
+
+    #[test]
+    fn validate_enforces_weights_and_range() {
+        assert!(IcpCriteria::default().validate().is_ok());
+        let skewed = IcpCriteria {
+            weights: ScoreWeights {
+                icp_fit: 90,
+                ..ScoreWeights::default()
+            },
+            ..IcpCriteria::default()
+        };
+        assert!(skewed.validate().is_err());
+        let inverted = IcpCriteria {
+            employee_range: (500, 20),
+            ..IcpCriteria::default()
+        };
+        assert!(inverted.validate().is_err());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+use crate::config::secret::Secret;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ConfigError {
@@ -15,60 +15,59 @@ pub enum ConfigError {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AppConfig {
-    pub database_url: String,
+    pub database_url: Secret,
     pub llm: LlmConfig,
     pub mem0_url: String,
-    pub apollo_api_key: String,
-    pub tavily_api_key: String,
+    pub apollo_api_key: Secret,
+    pub tavily_api_key: Secret,
     pub email: EmailConfig,
     pub hubspot: Option<HubspotConfig>,
     pub linkedin: Option<LinkedinConfig>,
-    pub slack_webhook_url: Option<String>,
+    pub slack_webhook_url: Option<Secret>,
     pub log_level: String,
     pub dry_run: bool,
     pub csv_data_dir: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LlmConfig {
     pub base_url: String,
-    pub api_key: String,
+    pub api_key: Secret,
     pub model: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EmailConfig {
     pub provider: EmailProvider,
     pub gmail: Option<GmailConfig>,
-    pub sendgrid_api_key: Option<String>,
+    pub sendgrid_api_key: Option<Secret>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmailProvider {
     Gmail,
     Sendgrid,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GmailConfig {
     pub client_id: String,
-    pub client_secret: String,
-    pub refresh_token: String,
+    pub client_secret: Secret,
+    pub refresh_token: Secret,
     pub senders: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HubspotConfig {
-    pub access_token: String,
+    pub access_token: Secret,
     pub owner_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LinkedinConfig {
-    pub heyreach_api_key: String,
+    pub heyreach_api_key: Secret,
     pub heyreach_campaign_id: Option<String>,
     pub daily_limit: u16,
 }
@@ -83,22 +82,22 @@ impl AppConfig {
     pub fn from_map(env: &EnvMap) -> Result<Self, ConfigError> {
         let email = EmailConfig::from_map(env)?;
         Ok(Self {
-            database_url: required(env, "DATABASE_URL")?,
+            database_url: required(env, "DATABASE_URL")?.into(),
             llm: LlmConfig {
                 base_url: required(env, "LLM_BASE_URL")?,
-                api_key: get_or(env, "LLM_API_KEY", "local"),
+                api_key: get_or(env, "LLM_API_KEY", "local").into(),
                 model: required(env, "LLM_MODEL")?,
             },
             mem0_url: required(env, "MEM0_URL")?,
-            apollo_api_key: required(env, "APOLLO_API_KEY")?,
-            tavily_api_key: required(env, "TAVILY_API_KEY")?,
+            apollo_api_key: required(env, "APOLLO_API_KEY")?.into(),
+            tavily_api_key: required(env, "TAVILY_API_KEY")?.into(),
             email,
-            hubspot: optional(env, "HUBSPOT_ACCESS_TOKEN").map(|access_token| HubspotConfig {
-                access_token,
+            hubspot: optional(env, "HUBSPOT_ACCESS_TOKEN").map(|token| HubspotConfig {
+                access_token: token.into(),
                 owner_id: optional(env, "HUBSPOT_OWNER_ID"),
             }),
             linkedin: linkedin_from_map(env)?,
-            slack_webhook_url: optional(env, "SLACK_WEBHOOK_URL"),
+            slack_webhook_url: optional(env, "SLACK_WEBHOOK_URL").map(Secret::new),
             log_level: get_or(env, "LOG_LEVEL", "info"),
             dry_run: parse_bool(env, "DRY_RUN", true)?,
             csv_data_dir: get_or(env, "CSV_DATA_DIR", "./data"),
@@ -118,36 +117,66 @@ impl EmailConfig {
                 });
             }
         };
-        let gmail = optional(env, "GMAIL_CLIENT_ID").map(|client_id| GmailConfig {
-            client_id,
-            client_secret: get_or(env, "GMAIL_CLIENT_SECRET", ""),
-            refresh_token: get_or(env, "GMAIL_REFRESH_TOKEN", ""),
-            senders: split_csv(&get_or(env, "GMAIL_SENDERS", "")),
-        });
-        let sendgrid_api_key = optional(env, "SENDGRID_API_KEY");
-        match provider {
-            EmailProvider::Gmail if gmail.is_none() => Err(ConfigError::ProviderCredentials {
-                provider: "gmail",
-                missing: "GMAIL_CLIENT_ID",
-            }),
-            EmailProvider::Sendgrid if sendgrid_api_key.is_none() => Err(ConfigError::ProviderCredentials {
+        let gmail = gmail_from_map(env, provider == EmailProvider::Gmail)?;
+        let sendgrid_api_key = optional(env, "SENDGRID_API_KEY").map(Secret::new);
+        if provider == EmailProvider::Sendgrid && sendgrid_api_key.is_none() {
+            return Err(ConfigError::ProviderCredentials {
                 provider: "sendgrid",
                 missing: "SENDGRID_API_KEY",
-            }),
-            _ => Ok(Self {
-                provider,
-                gmail,
-                sendgrid_api_key,
-            }),
+            });
+        }
+        Ok(Self {
+            provider,
+            gmail,
+            sendgrid_api_key,
+        })
+    }
+}
+
+fn gmail_from_map(env: &EnvMap, is_selected: bool) -> Result<Option<GmailConfig>, ConfigError> {
+    let Some(client_id) = optional(env, "GMAIL_CLIENT_ID") else {
+        if is_selected {
+            return Err(ConfigError::ProviderCredentials {
+                provider: "gmail",
+                missing: "GMAIL_CLIENT_ID",
+            });
+        }
+        return Ok(None);
+    };
+    let config = GmailConfig {
+        client_id,
+        client_secret: get_or(env, "GMAIL_CLIENT_SECRET", "").into(),
+        refresh_token: get_or(env, "GMAIL_REFRESH_TOKEN", "").into(),
+        senders: split_csv(&get_or(env, "GMAIL_SENDERS", "")),
+    };
+    if is_selected {
+        if config.client_secret.is_empty() {
+            return Err(ConfigError::ProviderCredentials {
+                provider: "gmail",
+                missing: "GMAIL_CLIENT_SECRET",
+            });
+        }
+        if config.refresh_token.is_empty() {
+            return Err(ConfigError::ProviderCredentials {
+                provider: "gmail",
+                missing: "GMAIL_REFRESH_TOKEN",
+            });
+        }
+        if config.senders.is_empty() {
+            return Err(ConfigError::ProviderCredentials {
+                provider: "gmail",
+                missing: "GMAIL_SENDERS",
+            });
         }
     }
+    Ok(Some(config))
 }
 
 fn linkedin_from_map(env: &EnvMap) -> Result<Option<LinkedinConfig>, ConfigError> {
     if !parse_bool(env, "LINKEDIN_ENABLED", false)? {
         return Ok(None);
     }
-    let heyreach_api_key = required(env, "HEYREACH_API_KEY")?;
+    let heyreach_api_key = required(env, "HEYREACH_API_KEY")?.into();
     Ok(Some(LinkedinConfig {
         heyreach_api_key,
         heyreach_campaign_id: optional(env, "HEYREACH_CAMPAIGN_ID"),
@@ -214,6 +243,8 @@ mod tests {
             ("APOLLO_API_KEY", "ap-key"),
             ("TAVILY_API_KEY", "tv-key"),
             ("GMAIL_CLIENT_ID", "cid"),
+            ("GMAIL_CLIENT_SECRET", "csec"),
+            ("GMAIL_REFRESH_TOKEN", "rtok"),
             ("GMAIL_SENDERS", "a@x.io, b@x.io"),
         ]
         .into_iter()
@@ -226,7 +257,7 @@ mod tests {
         let cfg = AppConfig::from_map(&base_env()).unwrap();
         assert_eq!(cfg.email.provider, EmailProvider::Gmail);
         assert!(cfg.dry_run);
-        assert_eq!(cfg.llm.api_key, "local");
+        assert_eq!(cfg.llm.api_key.expose(), "local");
         assert_eq!(cfg.email.gmail.unwrap().senders, vec!["a@x.io", "b@x.io"]);
         assert!(cfg.linkedin.is_none());
         assert!(cfg.hubspot.is_none());
@@ -253,6 +284,22 @@ mod tests {
     }
 
     #[test]
+    fn gmail_provider_requires_every_credential() {
+        for missing in ["GMAIL_CLIENT_SECRET", "GMAIL_REFRESH_TOKEN", "GMAIL_SENDERS"] {
+            let mut env = base_env();
+            env.remove(missing);
+            let err = AppConfig::from_map(&env).unwrap_err();
+            assert_eq!(
+                err,
+                ConfigError::ProviderCredentials {
+                    provider: "gmail",
+                    missing
+                }
+            );
+        }
+    }
+
+    #[test]
     fn sendgrid_provider_requires_its_key() {
         let mut env = base_env();
         env.insert("EMAIL_PROVIDER".into(), "sendgrid".into());
@@ -267,6 +314,15 @@ mod tests {
         env.insert("SENDGRID_API_KEY".into(), "sg-key".into());
         let cfg = AppConfig::from_map(&env).unwrap();
         assert_eq!(cfg.email.provider, EmailProvider::Sendgrid);
+    }
+
+    #[test]
+    fn sendgrid_provider_tolerates_partial_gmail_credentials() {
+        let mut env = base_env();
+        env.insert("EMAIL_PROVIDER".into(), "sendgrid".into());
+        env.insert("SENDGRID_API_KEY".into(), "sg-key".into());
+        env.remove("GMAIL_CLIENT_SECRET");
+        assert!(AppConfig::from_map(&env).is_ok());
     }
 
     #[test]
@@ -303,5 +359,16 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn debug_output_redacts_secrets() {
+        let cfg = AppConfig::from_map(&base_env()).unwrap();
+        let dump = format!("{cfg:?}");
+        assert!(!dump.contains("ap-key"));
+        assert!(!dump.contains("tv-key"));
+        assert!(!dump.contains("csec"));
+        assert!(!dump.contains("rtok"));
+        assert!(dump.contains("Secret(***)"));
     }
 }

@@ -48,13 +48,13 @@ impl MessagingRules {
             violations.push(MessagingViolation::TooLong { words, max });
         }
         for phrase in &self.banned_phrases {
-            if lower.contains(phrase.as_str()) {
+            if contains_word_bounded(&lower, phrase) {
                 violations.push(MessagingViolation::BannedPhrase(phrase.clone()));
             }
         }
-        let opener: String = lower.split_whitespace().take(8).collect::<Vec<_>>().join(" ");
+        let opener: String = lower.split_whitespace().take(16).collect::<Vec<_>>().join(" ");
         for banned in &self.banned_openers {
-            if opener.starts_with(banned.as_str()) {
+            if opener.contains(banned.as_str()) {
                 violations.push(MessagingViolation::BannedOpener(banned.clone()));
             }
         }
@@ -64,6 +64,26 @@ impl MessagingRules {
     pub fn passes(&self, body: &str, is_first_touch: bool) -> bool {
         self.check(body, is_first_touch).is_empty()
     }
+}
+
+fn contains_word_bounded(haystack: &str, needle: &str) -> bool {
+    let mut start = 0;
+    while let Some(pos) = haystack[start..].find(needle) {
+        let begin = start + pos;
+        let end = begin + needle.len();
+        let before_ok = begin == 0
+            || !haystack[..begin]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_alphanumeric);
+        let after_ok =
+            end == haystack.len() || !haystack[end..].chars().next().is_some_and(char::is_alphanumeric);
+        if before_ok && after_ok {
+            return true;
+        }
+        start = end;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -96,6 +116,19 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn greeting_prefix_does_not_hide_banned_opener() {
+        let rules = MessagingRules::default();
+        let v = rules.check("Hi Jane, I hope this email finds you well. We sell things.", true);
+        assert!(v.iter().any(|x| matches!(x, MessagingViolation::BannedOpener(_))));
+    }
+
+    #[test]
+    fn substring_inside_a_word_is_not_flagged() {
+        let rules = MessagingRules::default();
+        assert!(rules.passes("Congrats on deleveraging the balance sheet at Synergyx.", true));
     }
 
     #[test]
