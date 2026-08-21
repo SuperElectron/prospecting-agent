@@ -97,9 +97,7 @@ impl AppConfig {
                 model: required(env, "LLM_MODEL")?,
             },
             memory: MemoryConfig {
-                base_url: optional(env, "MEMORY_URL")
-                    .or_else(|| optional(env, "MEM0_URL"))
-                    .ok_or(ConfigError::Missing("MEMORY_URL"))?,
+                base_url: required(env, "MEMORY_URL")?,
                 user: get_or(env, "MEMORY_USER", "prospecting"),
             },
             apollo_api_key: required(env, "APOLLO_API_KEY")?.into(),

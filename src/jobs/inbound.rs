@@ -7,6 +7,7 @@ use crate::workflows::analysis::{InboundReply, analyze_reply};
 const POLL_QUERY: &str = "in:inbox -from:me newer_than:7d";
 const POLL_PAGE_SIZE: u16 = 25;
 const POLL_MAX_PAGES: u8 = 4;
+const MAX_MESSAGE_ATTEMPTS: i16 = 3;
 
 #[derive(Debug, thiserror::Error)]
 pub enum InboundError {
@@ -30,6 +31,7 @@ pub struct ReplyMonitorReport {
     pub unknown_sender: u64,
     pub already_processed: u64,
     pub failures: u64,
+    pub gave_up: u64,
 }
 
 pub fn parse_address(raw: &str) -> Option<&str> {
@@ -91,9 +93,9 @@ async fn handle_message(
     message_id: &str,
     report: &mut ReplyMonitorReport,
 ) {
-    match db::inbound::claim_message(&ctx.pool, message_id, sender_email).await {
-        Ok(true) => {}
-        Ok(false) => {
+    let attempts = match db::inbound::claim_message(&ctx.pool, message_id, sender_email).await {
+        Ok(Some(attempts)) => attempts,
+        Ok(None) => {
             report.already_processed += 1;
             return;
         }
@@ -102,7 +104,7 @@ async fn handle_message(
             report.failures += 1;
             return;
         }
-    }
+    };
     match process_message(ctx, sender_email, message_id).await {
         Ok(outcome) => {
             match outcome {
@@ -115,14 +117,14 @@ async fn handle_message(
             }
         }
         Err(e) => {
-            tracing::warn!(message = message_id, error = %e, "reply processing failed");
+            tracing::warn!(message = message_id, error = %e, attempts, "reply processing failed");
             report.failures += 1;
-            if let Err(release_error) = db::inbound::release_message(&ctx.pool, message_id).await {
-                tracing::warn!(
-                    message = message_id,
-                    error = %release_error,
-                    "claim release failed; lease will re-run it"
-                );
+            if attempts >= MAX_MESSAGE_ATTEMPTS {
+                tracing::warn!(message = message_id, attempts, "giving up on message permanently");
+                report.gave_up += 1;
+                if let Err(mark_error) = db::inbound::mark_completed(&ctx.pool, message_id).await {
+                    tracing::warn!(message = message_id, error = %mark_error, "give-up mark failed");
+                }
             }
         }
     }

@@ -8,11 +8,12 @@ use chrono::Utc;
 use sqlx::postgres::PgPoolOptions;
 
 use crate::connectors::{Notifier, NotifyLevel};
-use crate::jobs::{JobContext, JobError, JobKind, NamedJob, run_job};
+use crate::jobs::{JobContext, JobError, JobKind, NamedJob, RUN_TIMEOUT, run_job};
 
-const DEFAULT_SCHEDULES: [(JobKind, &str); 11] = [
+const DEFAULT_SCHEDULES: [(JobKind, &str); 12] = [
     (JobKind::CsvSync, "0 0 6 * * *"),
     (JobKind::EnrichContacts, "0 30 6 * * *"),
+    (JobKind::EnrichCompanies, "0 40 6 * * *"),
     (JobKind::DiscoverContacts, "0 45 6 * * *"),
     (JobKind::ResearchCompanies, "0 0 7 * * *"),
     (JobKind::DetectSignals, "0 0 8 * * *"),
@@ -36,7 +37,14 @@ pub enum RuntimeError {
 
 async fn execute(job: NamedJob, ctx: Data<Arc<JobContext>>) -> Result<(), Error> {
     tracing::info!(job = %job.name, "job starting");
-    match run_job(&ctx, job.name).await {
+    let outcome = match tokio::time::timeout(RUN_TIMEOUT, run_job(&ctx, job.name)).await {
+        Ok(outcome) => outcome,
+        Err(_) => Err(JobError::TimedOut {
+            job: job.name,
+            seconds: RUN_TIMEOUT.as_secs(),
+        }),
+    };
+    match outcome {
         Ok(report) => {
             tracing::info!(job = %job.name, %report, "job finished");
             Ok(())
