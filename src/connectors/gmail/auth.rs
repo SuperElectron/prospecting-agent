@@ -230,10 +230,23 @@ pub fn load_senders(path: &str) -> Result<Vec<SenderAccount>, ConnectorError> {
 
 pub fn save_senders(path: &str, senders: &[SenderAccount]) -> Result<(), ConnectorError> {
     let raw = serde_json::to_string_pretty(senders).map_err(|e| ConnectorError::Decode(e.to_string()))?;
-    std::fs::write(path, raw).map_err(|e| ConnectorError::Credentials {
+    let credentials_error = |reason: String| ConnectorError::Credentials {
         path: path.to_string(),
-        reason: e.to_string(),
-    })
+        reason,
+    };
+    std::fs::write(path, raw).map_err(|e| credentials_error(e.to_string()))?;
+    restrict_to_owner(path).map_err(|e| credentials_error(e.to_string()))
+}
+
+#[cfg(unix)]
+fn restrict_to_owner(path: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn restrict_to_owner(_path: &str) -> std::io::Result<()> {
+    Ok(())
 }
 
 fn urlencode(raw: &str) -> String {
@@ -254,6 +267,28 @@ fn urlencode(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn saved_senders_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("senders-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("senders.json");
+        let path = path.to_str().unwrap();
+        super::save_senders(
+            path,
+            &[super::SenderAccount {
+                email: "s@x.co".into(),
+                name: "S".into(),
+                refresh_token: "rt".into(),
+                daily_limit: 1,
+            }],
+        )
+        .unwrap();
+        let mode = std::fs::metadata(path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
     use super::*;
     use wiremock::matchers::{body_string_contains, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
