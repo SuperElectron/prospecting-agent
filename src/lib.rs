@@ -4,6 +4,8 @@ pub mod config;
 pub mod connectors;
 pub mod db;
 pub mod domain;
+pub mod http;
+pub mod jobs;
 pub mod llm;
 pub mod memory;
 pub mod observability;

@@ -1,0 +1,260 @@
+pub mod runtime;
+
+use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
+
+use crate::clients::{ApolloClient, TavilyClient};
+use crate::config::AppConfig;
+use crate::connectors::gmail::{GmailConnector, OauthClient, load_senders};
+use crate::connectors::health::{DbProbe, HealthInputs, HealthReport, run_health_check};
+use crate::connectors::{LogNotifier, Notifier, NotifyLevel};
+use crate::llm::{LlmClient, Policy};
+use crate::memory::MemoryClient;
+use crate::workflows::{discovery, reporting, research, sync};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobKind {
+    CsvSync,
+    EnrichContacts,
+    EnrichCompanies,
+    ResearchCompanies,
+    DetectSignals,
+    WeeklyReport,
+    HealthCheck,
+}
+
+impl JobKind {
+    pub const ALL: [JobKind; 7] = [
+        JobKind::CsvSync,
+        JobKind::EnrichContacts,
+        JobKind::EnrichCompanies,
+        JobKind::ResearchCompanies,
+        JobKind::DetectSignals,
+        JobKind::WeeklyReport,
+        JobKind::HealthCheck,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JobKind::CsvSync => "csv_sync",
+            JobKind::EnrichContacts => "enrich_contacts",
+            JobKind::EnrichCompanies => "enrich_companies",
+            JobKind::ResearchCompanies => "research_companies",
+            JobKind::DetectSignals => "detect_signals",
+            JobKind::WeeklyReport => "weekly_report",
+            JobKind::HealthCheck => "health_check",
+        }
+    }
+}
+
+impl std::fmt::Display for JobKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for JobKind {
+    type Err = JobError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|kind| kind.as_str() == raw)
+            .ok_or_else(|| JobError::Unknown(raw.to_string()))
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum JobError {
+    #[error("unknown job {0}")]
+    Unknown(String),
+    #[error("sync error: {0}")]
+    Sync(#[from] sync::SyncError),
+    #[error("discovery error: {0}")]
+    Discovery(#[from] discovery::DiscoveryError),
+    #[error("research error: {0}")]
+    Research(#[from] research::ResearchError),
+    #[error("report error: {0}")]
+    Report(#[from] reporting::ReportError),
+    #[error("report encoding failed: {0}")]
+    Encode(#[from] serde_json::Error),
+    #[error("queue error: {0}")]
+    Queue(#[from] sqlx::Error),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NamedJob {
+    pub name: JobKind,
+}
+
+pub struct JobContext {
+    pub pool: PgPool,
+    pub config: AppConfig,
+    pub memory: MemoryClient,
+    pub llm: LlmClient,
+    pub apollo: ApolloClient,
+    pub tavily: TavilyClient,
+    pub policies: Vec<Policy>,
+    pub notifier: LogNotifier,
+    pub gmail: Option<GmailConnector>,
+    pub oauth: Option<OauthClient>,
+}
+
+impl JobContext {
+    pub fn from_config(pool: PgPool, config: AppConfig) -> Self {
+        let memory = MemoryClient::new(&config.memory);
+        let llm = LlmClient::new(&config.llm);
+        let apollo = ApolloClient::new(config.apollo_api_key.clone());
+        let tavily = TavilyClient::new(config.tavily_api_key.clone());
+        let oauth = config
+            .email
+            .gmail
+            .as_ref()
+            .and_then(|gmail_config| OauthClient::from_file(&gmail_config.client_file).ok());
+        let gmail = config.email.gmail.as_ref().and_then(|gmail_config| {
+            let client = oauth.clone()?;
+            let senders = load_senders(&gmail_config.senders_file).ok()?;
+            if senders.is_empty() {
+                return None;
+            }
+            Some(GmailConnector::new(client, senders, pool.clone()))
+        });
+        Self {
+            pool,
+            config,
+            memory,
+            llm,
+            apollo,
+            tavily,
+            policies: crate::llm::default_policies(),
+            notifier: LogNotifier,
+            gmail,
+            oauth,
+        }
+    }
+}
+
+const RESEARCH_BATCH: i64 = 3;
+const ENRICH_LIMIT: i64 = 25;
+const ENRICH_CREDITS: u16 = 10;
+
+pub async fn health_report(ctx: &JobContext) -> HealthReport {
+    let senders = ctx
+        .gmail
+        .as_ref()
+        .map(|connector| connector.senders().to_vec())
+        .unwrap_or_default();
+    run_health_check(&HealthInputs {
+        db: DbProbe::Pool(&ctx.pool),
+        llm_base_url: Some(&ctx.config.llm.base_url),
+        memory_base_url: Some(&ctx.config.memory.base_url),
+        gmail: ctx.oauth.as_ref(),
+        senders: &senders,
+    })
+    .await
+}
+
+pub async fn run_job(ctx: &JobContext, kind: JobKind) -> Result<serde_json::Value, JobError> {
+    match kind {
+        JobKind::CsvSync => {
+            let report = sync::sync_dir(&ctx.pool, &ctx.memory, &ctx.config.csv_data_dir).await?;
+            Ok(serde_json::to_value(report)?)
+        }
+        JobKind::EnrichContacts => {
+            let mut credits = ENRICH_CREDITS;
+            let report =
+                discovery::enrich_contacts(&ctx.pool, &ctx.memory, &ctx.apollo, ENRICH_LIMIT, &mut credits)
+                    .await?;
+            Ok(serde_json::to_value(report)?)
+        }
+        JobKind::EnrichCompanies => {
+            let mut credits = ENRICH_CREDITS;
+            let report =
+                discovery::enrich_companies(&ctx.pool, &ctx.memory, &ctx.apollo, ENRICH_LIMIT, &mut credits)
+                    .await?;
+            Ok(serde_json::to_value(report)?)
+        }
+        JobKind::ResearchCompanies => research_batch(ctx).await,
+        JobKind::DetectSignals => signal_batch(ctx).await,
+        JobKind::WeeklyReport => {
+            let report = reporting::weekly_report(&ctx.pool, 7).await?;
+            if let Err(e) = ctx.notifier.notify(NotifyLevel::Info, &report.render()).await {
+                tracing::warn!(error = %e, "weekly report notify failed");
+            }
+            Ok(serde_json::to_value(report)?)
+        }
+        JobKind::HealthCheck => {
+            let report = health_report(ctx).await;
+            Ok(serde_json::to_value(report)?)
+        }
+    }
+}
+
+async fn research_batch(ctx: &JobContext) -> Result<serde_json::Value, JobError> {
+    let companies = crate::db::companies::list_unenriched(&ctx.pool, RESEARCH_BATCH)
+        .await
+        .map_err(research::ResearchError::from)
+        .map_err(JobError::from)?;
+    let mut researched = Vec::new();
+    for company in companies {
+        match research::research_company(
+            &ctx.pool,
+            &ctx.memory,
+            &ctx.tavily,
+            &ctx.llm,
+            &ctx.policies,
+            &company.domain,
+        )
+        .await
+        {
+            Ok(outcome) => researched.push(outcome.domain),
+            Err(e) => {
+                tracing::warn!(domain = company.domain, error = %e, "research job item failed");
+            }
+        }
+    }
+    Ok(serde_json::json!({ "researched": researched }))
+}
+
+async fn signal_batch(ctx: &JobContext) -> Result<serde_json::Value, JobError> {
+    let companies = crate::db::companies::list_recent(&ctx.pool, RESEARCH_BATCH)
+        .await
+        .map_err(research::ResearchError::from)
+        .map_err(JobError::from)?;
+    let mut ingested = 0u64;
+    for company in companies {
+        match research::detect_signals(
+            &ctx.pool,
+            &ctx.memory,
+            &ctx.tavily,
+            &ctx.llm,
+            &ctx.policies,
+            &company.domain,
+        )
+        .await
+        {
+            Ok(report) => ingested += report.ingested,
+            Err(e) => {
+                tracing::warn!(domain = company.domain, error = %e, "signal job item failed");
+            }
+        }
+    }
+    Ok(serde_json::json!({ "signals_ingested": ingested }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn every_kind_round_trips_through_its_name() {
+        for kind in JobKind::ALL {
+            assert_eq!(JobKind::from_str(kind.as_str()).unwrap(), kind);
+            let encoded = serde_json::to_value(kind).unwrap();
+            assert_eq!(encoded, serde_json::json!(kind.as_str()));
+        }
+        assert!(matches!(JobKind::from_str("nope"), Err(JobError::Unknown(_))));
+    }
+}
