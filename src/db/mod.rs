@@ -5,6 +5,7 @@ pub mod contacts;
 pub mod engagements;
 pub mod sequences;
 pub mod signals;
+pub mod strategies;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;

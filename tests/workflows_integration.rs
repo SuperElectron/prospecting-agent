@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use prospecting_agent::config::MemoryConfig;
 use prospecting_agent::db;
-use prospecting_agent::domain::{Signal, SignalKind, SignalStrength};
+use prospecting_agent::domain::{Channel, EngagementKind, Signal, SignalKind, SignalStrength};
 use prospecting_agent::memory::MemoryClient;
 use prospecting_agent::workflows::sync::{RowSkip, SkipKind, ingest_person, ingest_signal, sync_dir};
 use wiremock::matchers::{body_partial_json, method, path};
@@ -615,4 +615,157 @@ async fn company_enrichment_preserves_scoring_state() {
 
     let listed = db::companies::list_unenriched(&pool, 500).await.unwrap();
     assert!(listed.iter().all(|c| c.domain != domain));
+}
+
+fn llm_client(server: &MockServer) -> prospecting_agent::llm::LlmClient {
+    prospecting_agent::llm::LlmClient::new(&prospecting_agent::config::LlmConfig {
+        base_url: format!("{}/v1", server.uri()),
+        api_key: prospecting_agent::config::Secret::new("test"),
+        model: "gpt-oss-120b".into(),
+    })
+}
+
+fn completion_with(content: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"choices": [{"message": {"role": "assistant",
+        "content": content.to_string()}}]})
+}
+
+async fn mount_recall_empty(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/api/v1/memories/filter"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "items": [], "total": 0, "page": 1, "size": 50, "pages": 0,
+        })))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn account_strategy_persists_assessment_from_db_context() {
+    let pool = require_pool!();
+    let llm_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    mount_memorize_ok(&memory_server).await;
+    mount_recall_empty(&memory_server).await;
+    let domain = unique_domain("strat");
+    let mut company = prospecting_agent::domain::Company::new(&domain);
+    company.summary = Some("Austin devtools company".into());
+    db::companies::upsert(&pool, &company).await.unwrap();
+    let mut contact = prospecting_agent::domain::Contact::new(prospecting_agent::domain::ContactSource::Csv);
+    contact.email = Some(format!("vp-{}@{domain}", uuid::Uuid::new_v4().simple()));
+    contact.company_domain = Some(domain.clone());
+    db::contacts::upsert(&pool, &contact).await.unwrap();
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
+                "stage": "engaged",
+                "health": "watch",
+                "coordination_flags": ["carpet_bomb_risk"],
+                "summary": "Two active threads; coordinate before adding more.",
+            }))),
+        )
+        .expect(1)
+        .mount(&llm_server)
+        .await;
+    let strategy = prospecting_agent::workflows::accounts::evaluate_account_strategy(
+        &pool,
+        &memory_client(&memory_server),
+        &llm_client(&llm_server),
+        &prospecting_agent::llm::default_policies(),
+        &domain,
+    )
+    .await
+    .unwrap();
+    assert_eq!(strategy.stage, prospecting_agent::domain::AccountStage::Engaged);
+    let stored = db::strategies::by_domain(&pool, &domain).await.unwrap().unwrap();
+    assert_eq!(stored.health, prospecting_agent::domain::AccountHealth::Watch);
+    assert_eq!(stored.coordination_flags, vec!["carpet_bomb_risk"]);
+}
+
+#[tokio::test]
+async fn preflight_delays_on_carpet_bomb_when_recent_sends_hit_the_cap() {
+    let pool = require_pool!();
+    let domain = unique_domain("carpet");
+    let strategy = prospecting_agent::domain::AccountStrategy {
+        domain: domain.clone(),
+        stage: prospecting_agent::domain::AccountStage::Engaged,
+        health: prospecting_agent::domain::AccountHealth::Healthy,
+        coordination_flags: vec![prospecting_agent::domain::FLAG_CARPET_BOMB.into()],
+        summary: "busy account".into(),
+        updated_at: chrono::Utc::now(),
+    };
+    db::strategies::upsert(&pool, &strategy).await.unwrap();
+    for step in 0..2u8 {
+        let mut touched =
+            prospecting_agent::domain::Contact::new(prospecting_agent::domain::ContactSource::Csv);
+        touched.email = Some(format!("t{step}-{}@{domain}", uuid::Uuid::new_v4().simple()));
+        touched.company_domain = Some(domain.clone());
+        db::contacts::upsert(&pool, &touched).await.unwrap();
+        let mut sent =
+            prospecting_agent::domain::Engagement::outbound(touched.id, Channel::Email, EngagementKind::Sent);
+        sent.sequence_step = Some(step);
+        db::engagements::insert(&pool, &sent).await.unwrap();
+    }
+    let mut fresh = prospecting_agent::domain::Contact::new(prospecting_agent::domain::ContactSource::Csv);
+    fresh.email = Some(format!("fresh-{}@{domain}", uuid::Uuid::new_v4().simple()));
+    fresh.company_domain = Some(domain.clone());
+    db::contacts::upsert(&pool, &fresh).await.unwrap();
+    let decision = prospecting_agent::workflows::accounts::preflight(
+        &pool,
+        &prospecting_agent::workflows::accounts::PreflightConfig::default(),
+        &fresh,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        decision,
+        prospecting_agent::workflows::accounts::PreflightDecision::Delay { .. }
+    ));
+}
+
+#[tokio::test]
+async fn preflight_blocks_customers_and_modifies_new_contacts_at_advanced_accounts() {
+    let pool = require_pool!();
+    let domain = unique_domain("gate");
+    let mut strategy = prospecting_agent::domain::AccountStrategy {
+        domain: domain.clone(),
+        stage: prospecting_agent::domain::AccountStage::Customer,
+        health: prospecting_agent::domain::AccountHealth::Healthy,
+        coordination_flags: vec![],
+        summary: "they bought".into(),
+        updated_at: chrono::Utc::now(),
+    };
+    db::strategies::upsert(&pool, &strategy).await.unwrap();
+    let mut contact = prospecting_agent::domain::Contact::new(prospecting_agent::domain::ContactSource::Csv);
+    contact.company_domain = Some(domain.clone());
+    let config = prospecting_agent::workflows::accounts::PreflightConfig::default();
+    let blocked = prospecting_agent::workflows::accounts::preflight(&pool, &config, &contact)
+        .await
+        .unwrap();
+    assert!(matches!(
+        blocked,
+        prospecting_agent::workflows::accounts::PreflightDecision::Block { .. }
+    ));
+
+    strategy.stage = prospecting_agent::domain::AccountStage::Engaged;
+    strategy.coordination_flags = vec![prospecting_agent::domain::FLAG_NEW_CONTACT_ADVANCED.into()];
+    db::strategies::upsert(&pool, &strategy).await.unwrap();
+    contact.status = prospecting_agent::domain::ContactStatus::Enriched;
+    let modified = prospecting_agent::workflows::accounts::preflight(&pool, &config, &contact)
+        .await
+        .unwrap();
+    assert!(matches!(
+        modified,
+        prospecting_agent::workflows::accounts::PreflightDecision::Modify { .. }
+    ));
+
+    contact.status = prospecting_agent::domain::ContactStatus::InSequence;
+    let proceed = prospecting_agent::workflows::accounts::preflight(&pool, &config, &contact)
+        .await
+        .unwrap();
+    assert_eq!(
+        proceed,
+        prospecting_agent::workflows::accounts::PreflightDecision::Proceed
+    );
 }

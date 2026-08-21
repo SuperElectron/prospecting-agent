@@ -45,6 +45,24 @@ pub async fn insert(pool: &PgPool, engagement: &Engagement) -> Result<bool, DbEr
     Ok(result.rows_affected() > 0)
 }
 
+pub async fn recent_outbound_contacts_for_domain(
+    pool: &PgPool,
+    domain: &str,
+    window_days: i32,
+) -> Result<i64, DbError> {
+    let row = sqlx::query(
+        "SELECT COUNT(DISTINCT e.contact_id) AS touched FROM engagements e \
+         JOIN contacts c ON c.id = e.contact_id \
+         WHERE c.company_domain = $1 AND e.direction = 'outbound' AND e.kind = 'sent' \
+         AND e.occurred_at > now() - ($2 || ' days')::interval",
+    )
+    .bind(crate::domain::normalize_domain(domain))
+    .bind(window_days.to_string())
+    .fetch_one(pool)
+    .await?;
+    Ok(row.get("touched"))
+}
+
 pub async fn for_contact(pool: &PgPool, contact_id: Uuid, limit: i64) -> Result<Vec<Engagement>, DbError> {
     let rows =
         sqlx::query("SELECT * FROM engagements WHERE contact_id = $1 ORDER BY occurred_at DESC LIMIT $2")

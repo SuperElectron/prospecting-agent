@@ -45,6 +45,14 @@ pub struct CompanyResearch {
     pub personalization_angles: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AccountAssessment {
+    pub stage: String,
+    pub health: String,
+    pub coordination_flags: Vec<String>,
+    pub summary: String,
+}
+
 pub fn schema_instruction<T: JsonSchema>() -> String {
     let schema = schema_for!(T);
     let json = serde_json::to_string(&schema).unwrap_or_default();

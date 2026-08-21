@@ -280,6 +280,14 @@ pub async fn list_by_status(
     rows.iter().map(from_row).collect()
 }
 
+pub async fn list_by_company_domain(pool: &PgPool, domain: &str) -> Result<Vec<Contact>, DbError> {
+    let rows = sqlx::query("SELECT * FROM contacts WHERE company_domain = $1 ORDER BY updated_at DESC")
+        .bind(crate::domain::normalize_domain(domain))
+        .fetch_all(pool)
+        .await?;
+    rows.iter().map(from_row).collect()
+}
+
 pub async fn set_status(pool: &PgPool, id: Uuid, status: ContactStatus) -> Result<(), DbError> {
     sqlx::query("UPDATE contacts SET status = $2, updated_at = now() WHERE id = $1")
         .bind(id)
