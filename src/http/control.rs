@@ -1,6 +1,5 @@
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -11,8 +10,6 @@ use crate::db::{contacts, engagements, sequences, strategies};
 use crate::http::AppState;
 use crate::jobs::{self, JobError, JobKind, runtime};
 use crate::workflows::reporting;
-
-const RUN_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let report = jobs::health_report(&state.ctx).await;
@@ -62,7 +59,7 @@ pub async fn run_job_now(State(state): State<Arc<AppState>>, Path(name): Path<St
         state: state.clone(),
         kind,
     };
-    let outcome = tokio::time::timeout(RUN_TIMEOUT, jobs::run_job(&state.ctx, kind)).await;
+    let outcome = tokio::time::timeout(jobs::RUN_TIMEOUT, jobs::run_job(&state.ctx, kind)).await;
     match outcome {
         Ok(Ok(report)) => (StatusCode::OK, axum::Json(report)),
         Ok(Err(e)) => (
@@ -72,7 +69,7 @@ pub async fn run_job_now(State(state): State<Arc<AppState>>, Path(name): Path<St
         Err(_) => (
             StatusCode::GATEWAY_TIMEOUT,
             axum::Json(serde_json::json!({
-                "error": format!("job {kind} timed out after {}s", RUN_TIMEOUT.as_secs())
+                "error": format!("job {kind} timed out after {}s", jobs::RUN_TIMEOUT.as_secs())
             })),
         ),
     }

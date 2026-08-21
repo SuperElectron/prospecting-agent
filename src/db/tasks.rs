@@ -66,6 +66,18 @@ pub async fn finish(pool: &PgPool, id: Uuid, status: TaskStatus) -> Result<(), D
     Ok(())
 }
 
+pub async fn defer(pool: &PgPool, id: Uuid, due_at: DateTime<Utc>) -> Result<(), DbError> {
+    sqlx::query(
+        "UPDATE agent_tasks SET status = 'pending', due_at = $2, attempts = greatest(attempts - 1, 0) \
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(due_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn reschedule(pool: &PgPool, id: Uuid, due_at: DateTime<Utc>) -> Result<(), DbError> {
     sqlx::query("UPDATE agent_tasks SET status = 'pending', due_at = $2 WHERE id = $1")
         .bind(id)

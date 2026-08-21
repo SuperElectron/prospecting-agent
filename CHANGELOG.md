@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.4.0 — M4 Jobs & Runtime (2026-08-21)
+
+The prospecting loop runs itself: a Postgres-backed job queue, twelve scheduled jobs, a local control API, and every workflow wired into unattended operation.
+
+### Added
+- Job runtime: apalis queue isolated in its own schemas, worker with per-job timeout and failure notify, cron scheduler over a compile-checked JobKind table (no name drift possible)
+- Control API on loopback: health, job list/run/enqueue with in-flight guards and timeouts, weekly report, contact lookup, named webhook dispatch with the first production handler (inbound_reply)
+- Discovery job: ICP-ranked sourcing for contact-less companies with a 30-day attempt cooldown that failed searches never burn
+- Outreach engine: hourly send pass under every guard — cadence windows (follow-ups included), min-day spacing, account preflight with warm-intro capping, opt-out stops, capacity-aware transport; state advances before send so failures burn a slot instead of double-sending; final-step failures end as Manual, never fake a completion
+- Sequence enrollment for enriched contacts; personalization angles memorized on send for future dedupe
+- Agent tasks in Postgres: SKIP LOCKED claiming with a one-hour reaper lease, per-run credit budget, bounded retries to a terminal state
+- Reply monitor: per-sender Gmail polling with pagination, case-insensitive contact matching enforced by the schema, an at-least-once claim lease with bounded attempts, replies through the M3 analysis pipeline
+- Daily digest at the close of each send day plus the Monday weekly report, one parameterized activity-report path
+- CI workflow (fresh Postgres service) enforcing fmt, clippy -D warnings, and the full integration suite — with vacuity guards so silently-skipped tests fail loudly
+- Migrations 0008–0012: discovery tracking, agent tasks, processed-message ledger, email normalization (merge-style dedupe that re-points history and preserves terminal statuses), inbound attempt tracking
+
+### Changed
+- Contact emails normalize at every boundary; uniqueness moved to lower(email)
+- BREAKING for existing .env files: MEM0_URL alias removed; the memory endpoint must be set as MEMORY_URL
+
+
 ## v0.3.0 — M3 Workflows (2026-08-21)
 
 The full prospecting loop as callable workflows, live-verified end to end: CSV import through research, strategy, outreach generation, and reply handling.

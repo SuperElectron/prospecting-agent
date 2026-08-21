@@ -1,0 +1,1 @@
+ALTER TABLE processed_inbound ADD COLUMN attempts SMALLINT NOT NULL DEFAULT 1;

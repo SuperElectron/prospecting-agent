@@ -7,31 +7,25 @@ pub async fn claim_message(
     pool: &PgPool,
     gmail_message_id: &str,
     sender_email: &str,
-) -> Result<bool, DbError> {
-    let result = sqlx::query(
+) -> Result<Option<i16>, DbError> {
+    let attempts = sqlx::query_scalar::<_, i16>(
         "INSERT INTO processed_inbound (gmail_message_id, sender_email) VALUES ($1, $2) \
          ON CONFLICT (gmail_message_id) DO UPDATE \
-         SET processed_at = now(), sender_email = EXCLUDED.sender_email \
+         SET processed_at = now(), sender_email = EXCLUDED.sender_email, \
+             attempts = processed_inbound.attempts + 1 \
          WHERE processed_inbound.completed_at IS NULL \
-           AND processed_inbound.processed_at < now() - interval '1 hour'",
+           AND processed_inbound.processed_at < now() - interval '1 hour' \
+         RETURNING attempts",
     )
     .bind(gmail_message_id)
     .bind(sender_email)
-    .execute(pool)
+    .fetch_optional(pool)
     .await?;
-    Ok(result.rows_affected() > 0)
+    Ok(attempts)
 }
 
 pub async fn mark_completed(pool: &PgPool, gmail_message_id: &str) -> Result<(), DbError> {
     sqlx::query("UPDATE processed_inbound SET completed_at = now() WHERE gmail_message_id = $1")
-        .bind(gmail_message_id)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
-pub async fn release_message(pool: &PgPool, gmail_message_id: &str) -> Result<(), DbError> {
-    sqlx::query("DELETE FROM processed_inbound WHERE gmail_message_id = $1")
         .bind(gmail_message_id)
         .execute(pool)
         .await?;

@@ -9,6 +9,7 @@ use crate::jobs::JobContext;
 use crate::workflows::sync::ingest_person;
 
 const CLAIM_LIMIT: i64 = 20;
+const TASK_CREDITS: u16 = 5;
 const MAX_TASK_ATTEMPTS: u8 = 3;
 const RETRY_DELAY_HOURS: i64 = 1;
 
@@ -33,6 +34,7 @@ pub enum TaskError {
 enum Completion {
     Done,
     Skipped,
+    Deferred,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -42,15 +44,21 @@ pub struct TaskRunReport {
     pub skipped: u64,
     pub retried: u64,
     pub failed: u64,
+    pub deferred: u64,
+    pub credits_spent: u64,
     pub bookkeeping_failed: u64,
 }
 
 pub async fn execute_due(ctx: &JobContext) -> Result<TaskRunReport, crate::jobs::JobError> {
     let mut report = TaskRunReport::default();
+    let mut credits = TASK_CREDITS;
     let tasks = db::tasks::claim_due(&ctx.pool, Utc::now(), CLAIM_LIMIT).await?;
     for task in tasks {
         report.claimed += 1;
-        let bookkeeping = match execute_one(ctx, &task).await {
+        let before = credits;
+        let outcome = execute_one(ctx, &task, &mut credits).await;
+        report.credits_spent += u64::from(before - credits);
+        let bookkeeping = match outcome {
             Ok(Completion::Done) => {
                 report.done += 1;
                 db::tasks::finish(&ctx.pool, task.id, TaskStatus::Done).await
@@ -58,6 +66,11 @@ pub async fn execute_due(ctx: &JobContext) -> Result<TaskRunReport, crate::jobs:
             Ok(Completion::Skipped) => {
                 report.skipped += 1;
                 db::tasks::finish(&ctx.pool, task.id, TaskStatus::Skipped).await
+            }
+            Ok(Completion::Deferred) => {
+                report.deferred += 1;
+                let due = Utc::now() + Duration::hours(RETRY_DELAY_HOURS);
+                db::tasks::defer(&ctx.pool, task.id, due).await
             }
             Err(reason) => {
                 tracing::warn!(task = %task.id, kind = ?task.kind, error = %reason, "task attempt failed");
@@ -79,9 +92,9 @@ pub async fn execute_due(ctx: &JobContext) -> Result<TaskRunReport, crate::jobs:
     Ok(report)
 }
 
-async fn execute_one(ctx: &JobContext, task: &AgentTask) -> Result<Completion, TaskError> {
+async fn execute_one(ctx: &JobContext, task: &AgentTask, credits: &mut u16) -> Result<Completion, TaskError> {
     match task.kind {
-        TaskKind::EnrichContact => enrich_contact(ctx, task).await,
+        TaskKind::EnrichContact => enrich_contact(ctx, task, credits).await,
         TaskKind::ResearchCompany => research_company(ctx, task).await,
         TaskKind::NotifyRep => notify_rep(ctx, task).await,
         TaskKind::GenerateOutreach | TaskKind::SendOutreach | TaskKind::AnalyzeReply | TaskKind::SyncCrm => {
@@ -90,7 +103,14 @@ async fn execute_one(ctx: &JobContext, task: &AgentTask) -> Result<Completion, T
     }
 }
 
-async fn enrich_contact(ctx: &JobContext, task: &AgentTask) -> Result<Completion, TaskError> {
+async fn enrich_contact(
+    ctx: &JobContext,
+    task: &AgentTask,
+    credits: &mut u16,
+) -> Result<Completion, TaskError> {
+    if *credits == 0 {
+        return Ok(Completion::Deferred);
+    }
     let contact_id = task.contact_id.ok_or(TaskError::Missing("contact id"))?;
     let contact = db::contacts::by_id(&ctx.pool, contact_id)
         .await?
@@ -99,6 +119,7 @@ async fn enrich_contact(ctx: &JobContext, task: &AgentTask) -> Result<Completion
         .email
         .as_deref()
         .ok_or(TaskError::Missing("contact email"))?;
+    *credits -= 1;
     let Some(person) = ctx.apollo.match_person(email).await? else {
         db::contacts::advance_status(&ctx.pool, contact_id, ContactStatus::New, ContactStatus::NoMatch)
             .await?;

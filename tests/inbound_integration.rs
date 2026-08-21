@@ -195,7 +195,7 @@ async fn unmatched_sender_is_recorded_but_not_analyzed() {
 }
 
 #[tokio::test]
-async fn failed_processing_releases_the_claim_for_retry() {
+async fn failed_processing_keeps_the_claim_for_lease_backoff() {
     let Some(mut ctx) = test_ctx().await else { return };
     let gmail_server = MockServer::start().await;
     mount_token(&gmail_server).await;
@@ -222,20 +222,42 @@ async fn failed_processing_releases_the_claim_for_retry() {
         .await
         .unwrap();
     assert_eq!(report.failures, 1);
-    let reclaimed = db::inbound::claim_message(&ctx.pool, &message_id, "sender@inbound.example.com")
+    assert_eq!(report.gave_up, 0);
+    assert!(
+        db::inbound::claim_message(&ctx.pool, &message_id, "sender@inbound.example.com")
+            .await
+            .unwrap()
+            .is_none(),
+        "failed message must wait out the lease, not retry immediately"
+    );
+    sqlx::query(
+        "UPDATE processed_inbound SET processed_at = now() - interval '2 hours' WHERE gmail_message_id = $1",
+    )
+    .bind(&message_id)
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+    let attempts = db::inbound::claim_message(&ctx.pool, &message_id, "sender@inbound.example.com")
         .await
-        .unwrap();
-    assert!(reclaimed, "failed message should be claimable again");
+        .unwrap()
+        .expect("stale failed claim reopens");
+    assert_eq!(attempts, 2);
 }
 
 #[tokio::test]
 async fn message_claims_are_exclusive() {
     let Some(ctx) = test_ctx().await else { return };
     let id = format!("claim-{}", uuid::Uuid::new_v4().simple());
-    assert!(db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap());
-    assert!(!db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap());
-    db::inbound::release_message(&ctx.pool, &id).await.unwrap();
-    assert!(db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap());
+    assert_eq!(
+        db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap(),
+        Some(1)
+    );
+    assert!(
+        db::inbound::claim_message(&ctx.pool, &id, "a@b.c")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -362,8 +384,18 @@ async fn polling_follows_page_tokens_across_pages() {
 async fn stale_incomplete_claims_are_reclaimed_after_the_lease() {
     let Some(ctx) = test_ctx().await else { return };
     let id = format!("lease-{}", uuid::Uuid::new_v4().simple());
-    assert!(db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap());
-    assert!(!db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap());
+    assert!(
+        db::inbound::claim_message(&ctx.pool, &id, "a@b.c")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        db::inbound::claim_message(&ctx.pool, &id, "a@b.c")
+            .await
+            .unwrap()
+            .is_none()
+    );
     sqlx::query(
         "UPDATE processed_inbound SET processed_at = now() - interval '2 hours' WHERE gmail_message_id = $1",
     )
@@ -371,7 +403,12 @@ async fn stale_incomplete_claims_are_reclaimed_after_the_lease() {
     .execute(&ctx.pool)
     .await
     .unwrap();
-    assert!(db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap());
+    assert!(
+        db::inbound::claim_message(&ctx.pool, &id, "a@b.c")
+            .await
+            .unwrap()
+            .is_some()
+    );
     db::inbound::mark_completed(&ctx.pool, &id).await.unwrap();
     sqlx::query(
         "UPDATE processed_inbound SET processed_at = now() - interval '2 hours' WHERE gmail_message_id = $1",
@@ -381,7 +418,10 @@ async fn stale_incomplete_claims_are_reclaimed_after_the_lease() {
     .await
     .unwrap();
     assert!(
-        !db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap(),
+        db::inbound::claim_message(&ctx.pool, &id, "a@b.c")
+            .await
+            .unwrap()
+            .is_none(),
         "completed messages must never be reclaimed"
     );
 }

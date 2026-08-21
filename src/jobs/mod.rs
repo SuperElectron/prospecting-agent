@@ -108,6 +108,8 @@ pub enum JobError {
     Outreach(#[from] crate::workflows::outreach::OutreachError),
     #[error("every discovery search failed across {attempted} companies")]
     DiscoveryUnavailable { attempted: usize },
+    #[error("job {job} timed out after {seconds}s")]
+    TimedOut { job: JobKind, seconds: u64 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,6 +163,8 @@ impl JobContext {
         }
     }
 }
+
+pub const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 const RESEARCH_BATCH: i64 = 3;
 const DISCOVER_BATCH: i64 = 5;
