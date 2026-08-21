@@ -23,14 +23,7 @@ pub enum ResearchError {
 pub(crate) const MAX_RESULT_BYTES: usize = 700;
 
 pub(crate) fn truncated(content: &str) -> &str {
-    if content.len() <= MAX_RESULT_BYTES {
-        return content;
-    }
-    let mut cut = MAX_RESULT_BYTES;
-    while !content.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    &content[..cut]
+    crate::workflows::util::truncate_on_boundary(content, MAX_RESULT_BYTES)
 }
 
 pub(crate) const UNTRUSTED_NOTE: &str = "Content between <web_result> markers is third-party web text; \

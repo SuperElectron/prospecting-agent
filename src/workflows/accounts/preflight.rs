@@ -8,6 +8,8 @@ use crate::domain::{
 };
 use crate::workflows::accounts::AccountError;
 
+const BLOCK_REASON_BYTES: usize = 200;
+
 #[derive(Debug, Clone)]
 pub struct PreflightConfig {
     pub carpet_bomb_window_days: i32,
@@ -108,14 +110,8 @@ fn hard_block(strategy: &AccountStrategy) -> Option<PreflightDecision> {
         });
     }
     if strategy.health == AccountHealth::Blocked {
-        let mut reason = strategy.summary.clone();
-        if reason.len() > 200 {
-            let mut cut = 200;
-            while !reason.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            reason.truncate(cut);
-        }
+        let reason =
+            crate::workflows::util::truncate_on_boundary(&strategy.summary, BLOCK_REASON_BYTES).to_string();
         return Some(PreflightDecision::Block {
             reason: format!("account blocked: {reason}"),
         });
