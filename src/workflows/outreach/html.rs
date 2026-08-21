@@ -1,12 +1,14 @@
 pub fn render_html(body_text: &str) -> String {
-    let paragraphs: Vec<String> = body_text
+    let normalized = body_text.replace("\r\n", "\n");
+    let paragraphs: Vec<String> = normalized
         .split("\n\n")
         .map(str::trim)
         .filter(|p| !p.is_empty())
         .map(|p| format!("<p>{}</p>", escape(p).replace('\n', "<br>")))
         .collect();
     format!(
-        "<!DOCTYPE html><html><body style=\"font-family: Arial, sans-serif; font-size: 14px; \
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head>\
+         <body style=\"font-family: Arial, sans-serif; font-size: 14px; \
          color: #222; line-height: 1.5;\">{}</body></html>",
         paragraphs.join("")
     )
@@ -17,6 +19,7 @@ fn escape(raw: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 #[cfg(test)]
@@ -36,6 +39,14 @@ mod tests {
         let html = render_html("a < b & c > \"d\"");
         assert!(html.contains("a &lt; b &amp; c &gt; &quot;d&quot;"));
         assert!(!html.contains("a < b"));
+    }
+
+    #[test]
+    fn crlf_bodies_keep_paragraph_structure() {
+        let html = render_html("First para.\r\n\r\nSecond para.");
+        assert!(html.contains("<p>First para.</p>"));
+        assert!(html.contains("<p>Second para.</p>"));
+        assert!(!html.contains('\r'));
     }
 
     #[test]
