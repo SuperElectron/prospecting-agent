@@ -43,9 +43,10 @@ pub async fn insert(pool: &PgPool, task: &AgentTask) -> Result<(), DbError> {
 
 pub async fn claim_due(pool: &PgPool, now: DateTime<Utc>, limit: i64) -> Result<Vec<AgentTask>, DbError> {
     let rows = sqlx::query(
-        "UPDATE agent_tasks SET status = 'running', attempts = attempts + 1 \
+        "UPDATE agent_tasks SET status = 'running', attempts = attempts + 1, claimed_at = now() \
          WHERE id IN (SELECT id FROM agent_tasks \
-                      WHERE status = 'pending' AND (due_at IS NULL OR due_at <= $1) \
+                      WHERE (status = 'pending' AND (due_at IS NULL OR due_at <= $1)) \
+                         OR (status = 'running' AND claimed_at < now() - interval '1 hour') \
                       ORDER BY created_at ASC LIMIT $2 FOR UPDATE SKIP LOCKED) \
          RETURNING *",
     )

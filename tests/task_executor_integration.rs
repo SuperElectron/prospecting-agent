@@ -91,3 +91,45 @@ async fn failing_task_retries_then_fails_permanently() {
     let failed = db::tasks::by_id(&ctx.pool, exhausted.id).await.unwrap().unwrap();
     assert_eq!(failed.status, TaskStatus::Failed);
 }
+
+#[tokio::test]
+async fn stale_running_tasks_are_reclaimed_and_concurrent_claims_stay_disjoint() {
+    let Some(ctx) = test_ctx().await else { return };
+    let _exec = EXEC_LOCK.lock().await;
+    let task = AgentTask::new(TaskKind::NotifyRep, serde_json::json!({"message": "stale"}));
+    db::tasks::insert(&ctx.pool, &task).await.unwrap();
+    let first = db::tasks::claim_due(&ctx.pool, Utc::now(), 100_000)
+        .await
+        .unwrap();
+    assert!(first.iter().any(|claimed| claimed.id == task.id));
+    let fresh = db::tasks::claim_due(&ctx.pool, Utc::now(), 100_000)
+        .await
+        .unwrap();
+    assert!(!fresh.iter().any(|claimed| claimed.id == task.id));
+    sqlx::query("UPDATE agent_tasks SET claimed_at = now() - interval '2 hours' WHERE id = $1")
+        .bind(task.id)
+        .execute(&ctx.pool)
+        .await
+        .unwrap();
+    let reclaimed = db::tasks::claim_due(&ctx.pool, Utc::now(), 100_000)
+        .await
+        .unwrap();
+    assert!(reclaimed.iter().any(|claimed| claimed.id == task.id));
+    db::tasks::finish(&ctx.pool, task.id, TaskStatus::Done)
+        .await
+        .unwrap();
+
+    let a = AgentTask::new(TaskKind::NotifyRep, serde_json::json!({"message": "a"}));
+    let b = AgentTask::new(TaskKind::NotifyRep, serde_json::json!({"message": "b"}));
+    db::tasks::insert(&ctx.pool, &a).await.unwrap();
+    db::tasks::insert(&ctx.pool, &b).await.unwrap();
+    let (left, right) = tokio::join!(
+        db::tasks::claim_due(&ctx.pool, Utc::now(), 1),
+        db::tasks::claim_due(&ctx.pool, Utc::now(), 1),
+    );
+    let left = left.unwrap();
+    let right = right.unwrap();
+    for claimed in &left {
+        assert!(!right.iter().any(|other| other.id == claimed.id));
+    }
+}

@@ -63,7 +63,7 @@ pub async fn for_contact(pool: &PgPool, contact_id: Uuid) -> Result<Option<Seque
 }
 
 pub async fn list_active(pool: &PgPool, limit: i64) -> Result<Vec<SequenceState>, DbError> {
-    let rows = sqlx::query("SELECT * FROM sequence_states WHERE stopped = false LIMIT $1")
+    let rows = sqlx::query("SELECT * FROM sequence_states WHERE stopped = false ORDER BY last_sent_at ASC NULLS FIRST, contact_id ASC LIMIT $1")
         .bind(limit)
         .fetch_all(pool)
         .await?;
