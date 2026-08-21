@@ -190,7 +190,7 @@ async fn unmatched_sender_is_recorded_but_not_analyzed() {
     let report = prospecting_agent::jobs::inbound::poll_replies(&ctx)
         .await
         .unwrap();
-    assert_eq!(report.unmatched, 1);
+    assert_eq!(report.unknown_sender, 1);
     assert_eq!(report.replies_processed, 0);
 }
 
@@ -236,4 +236,152 @@ async fn message_claims_are_exclusive() {
     assert!(!db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap());
     db::inbound::release_message(&ctx.pool, &id).await.unwrap();
     assert!(db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap());
+}
+
+#[tokio::test]
+async fn reply_from_a_differently_cased_address_still_matches() {
+    let Some(mut ctx) = test_ctx().await else { return };
+    let gmail_server = MockServer::start().await;
+    let llm_server = MockServer::start().await;
+    let memory_server = MockServer::start().await;
+    mount_token(&gmail_server).await;
+    mount_memory_ok(&memory_server).await;
+    let stamp = uuid::Uuid::new_v4().simple().to_string();
+    let contact_email = format!("cased-{stamp}@inbound.example.com");
+    let mut contact = Contact::new(ContactSource::Csv);
+    contact.email = Some(contact_email.clone());
+    contact.status = ContactStatus::InSequence;
+    db::contacts::upsert(&ctx.pool, &contact).await.unwrap();
+    let message_id = format!("cased-{stamp}");
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "messages": [{"id": message_id, "threadId": "t-9"}],
+        })))
+        .mount(&gmail_server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/gmail/v1/users/me/messages/{message_id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": message_id, "threadId": "t-9",
+            "snippet": "Happy to talk.",
+            "payload": {"headers": [
+                {"name": "From", "value": format!("Cased <{}>", contact_email.to_uppercase())},
+            ]},
+        })))
+        .mount(&gmail_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
+                "intent": "interested",
+                "summary": "Wants to talk.",
+                "suggested_action": "book a call",
+                "notify_rep": true,
+            }))),
+        )
+        .mount(&llm_server)
+        .await;
+    ctx.gmail = Some(mock_gmail(
+        &gmail_server,
+        ctx.pool.clone(),
+        "sender@inbound.example.com",
+    ));
+    ctx.llm = prospecting_agent::llm::LlmClient::new(&prospecting_agent::config::LlmConfig {
+        base_url: format!("{}/v1", llm_server.uri()),
+        api_key: Secret::new("test"),
+        model: "test-model".into(),
+    });
+    ctx.memory = prospecting_agent::memory::MemoryClient::new(&prospecting_agent::config::MemoryConfig {
+        base_url: memory_server.uri(),
+        user: "test".into(),
+    });
+    let report = prospecting_agent::jobs::inbound::poll_replies(&ctx)
+        .await
+        .unwrap();
+    assert_eq!(report.replies_processed, 1);
+    assert_eq!(report.unknown_sender, 0);
+    let after = db::contacts::by_email(&ctx.pool, &contact_email)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.status, ContactStatus::Replied);
+}
+
+#[tokio::test]
+async fn polling_follows_page_tokens_across_pages() {
+    let Some(mut ctx) = test_ctx().await else { return };
+    let gmail_server = MockServer::start().await;
+    mount_token(&gmail_server).await;
+    let stamp = uuid::Uuid::new_v4().simple().to_string();
+    let first_id = format!("page1-{stamp}");
+    let second_id = format!("page2-{stamp}");
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages"))
+        .and(wiremock::matchers::query_param("pageToken", "next-page"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "messages": [{"id": second_id, "threadId": "t-p2"}],
+        })))
+        .mount(&gmail_server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "messages": [{"id": first_id, "threadId": "t-p1"}],
+            "nextPageToken": "next-page",
+        })))
+        .mount(&gmail_server)
+        .await;
+    for id in [&first_id, &second_id] {
+        Mock::given(method("GET"))
+            .and(path(format!("/gmail/v1/users/me/messages/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": id, "threadId": "t", "snippet": "hi",
+                "payload": {"headers": [
+                    {"name": "From", "value": format!("S <none-{stamp}@unknown.example.com>")},
+                ]},
+            })))
+            .mount(&gmail_server)
+            .await;
+    }
+    ctx.gmail = Some(mock_gmail(
+        &gmail_server,
+        ctx.pool.clone(),
+        "sender@inbound.example.com",
+    ));
+    let report = prospecting_agent::jobs::inbound::poll_replies(&ctx)
+        .await
+        .unwrap();
+    assert_eq!(report.pages_listed, 2);
+    assert_eq!(report.messages_listed, 2);
+    assert_eq!(report.unknown_sender, 2);
+}
+
+#[tokio::test]
+async fn stale_incomplete_claims_are_reclaimed_after_the_lease() {
+    let Some(ctx) = test_ctx().await else { return };
+    let id = format!("lease-{}", uuid::Uuid::new_v4().simple());
+    assert!(db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap());
+    assert!(!db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap());
+    sqlx::query(
+        "UPDATE processed_inbound SET processed_at = now() - interval '2 hours' WHERE gmail_message_id = $1",
+    )
+    .bind(&id)
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+    assert!(db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap());
+    db::inbound::mark_completed(&ctx.pool, &id).await.unwrap();
+    sqlx::query(
+        "UPDATE processed_inbound SET processed_at = now() - interval '2 hours' WHERE gmail_message_id = $1",
+    )
+    .bind(&id)
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
+    assert!(
+        !db::inbound::claim_message(&ctx.pool, &id, "a@b.c").await.unwrap(),
+        "completed messages must never be reclaimed"
+    );
 }

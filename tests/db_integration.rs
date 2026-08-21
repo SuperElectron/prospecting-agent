@@ -390,3 +390,18 @@ async fn discovery_listing_breaks_score_ties_by_oldest_and_honors_limit() {
     let capped = db::companies::list_without_contacts(&pool, 1).await.unwrap();
     assert_eq!(capped.len(), 1);
 }
+
+#[tokio::test]
+async fn emails_normalize_on_write_and_lookup() {
+    let pool = require_pool!();
+    let stamp = uuid::Uuid::new_v4().simple().to_string();
+    let mixed = format!("  Jane.Doe-{stamp}@ACME.example.com ");
+    let clean = format!("jane.doe-{stamp}@acme.example.com");
+    let mut contact = Contact::new(ContactSource::Csv);
+    contact.email = Some(mixed.clone());
+    db::contacts::upsert(&pool, &contact).await.unwrap();
+    let by_clean = db::contacts::by_email(&pool, &clean).await.unwrap().unwrap();
+    assert_eq!(by_clean.email.as_deref(), Some(clean.as_str()));
+    let by_mixed = db::contacts::by_email(&pool, &mixed).await.unwrap().unwrap();
+    assert_eq!(by_mixed.id, by_clean.id);
+}

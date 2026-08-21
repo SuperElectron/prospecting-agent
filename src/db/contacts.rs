@@ -47,8 +47,8 @@ async fn resolve_id(pool: &PgPool, contact: &Contact) -> Result<Uuid, DbError> {
     let Some(email) = &contact.email else {
         return Ok(contact.id);
     };
-    let existing = sqlx::query_scalar::<_, Uuid>("SELECT id FROM contacts WHERE email = $1")
-        .bind(email)
+    let existing = sqlx::query_scalar::<_, Uuid>("SELECT id FROM contacts WHERE lower(email) = $1")
+        .bind(crate::domain::normalize_email(email))
         .fetch_optional(pool)
         .await?;
     Ok(existing.unwrap_or(contact.id))
@@ -74,7 +74,7 @@ pub async fn upsert(pool: &PgPool, contact: &Contact) -> Result<Uuid, DbError> {
         let id = resolve_id(pool, contact).await?;
         let result = sqlx::query(&sql)
             .bind(id)
-            .bind(&contact.email)
+            .bind(contact.email.as_deref().map(crate::domain::normalize_email))
             .bind(&contact.first_name)
             .bind(&contact.last_name)
             .bind(&contact.title)
@@ -130,7 +130,7 @@ pub async fn upsert_import(pool: &PgPool, contact: &Contact) -> Result<Uuid, DbE
         let id = resolve_id(pool, contact).await?;
         let result = sqlx::query(&sql)
             .bind(id)
-            .bind(&contact.email)
+            .bind(contact.email.as_deref().map(crate::domain::normalize_email))
             .bind(&contact.first_name)
             .bind(&contact.last_name)
             .bind(&contact.title)
@@ -197,7 +197,7 @@ pub async fn upsert_enrichment(pool: &PgPool, contact: &Contact) -> Result<Uuid,
         let id = resolve_id(pool, contact).await?;
         let result = sqlx::query(&sql)
             .bind(id)
-            .bind(&contact.email)
+            .bind(contact.email.as_deref().map(crate::domain::normalize_email))
             .bind(&contact.first_name)
             .bind(&contact.last_name)
             .bind(&contact.title)
@@ -260,8 +260,8 @@ pub async fn by_crm_id(pool: &PgPool, crm_id: &str) -> Result<Option<Contact>, D
 }
 
 pub async fn by_email(pool: &PgPool, email: &str) -> Result<Option<Contact>, DbError> {
-    let row = sqlx::query("SELECT * FROM contacts WHERE email = $1")
-        .bind(email)
+    let row = sqlx::query("SELECT * FROM contacts WHERE lower(email) = $1")
+        .bind(crate::domain::normalize_email(email))
         .fetch_optional(pool)
         .await?;
     row.as_ref().map(from_row).transpose()
