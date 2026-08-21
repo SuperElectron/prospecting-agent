@@ -11,6 +11,8 @@ use crate::http::AppState;
 pub enum WebhookError {
     #[error("{0}")]
     Rejected(String),
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 pub type WebhookResult = Result<serde_json::Value, WebhookError>;
@@ -62,9 +64,16 @@ pub async fn dispatch(
     };
     match handler(state.clone(), payload).await {
         Ok(result) => (StatusCode::OK, axum::Json(result)),
-        Err(reason) => (
+        Err(WebhookError::Rejected(reason)) => (
             StatusCode::UNPROCESSABLE_ENTITY,
-            axum::Json(serde_json::json!({"error": reason.to_string()})),
+            axum::Json(serde_json::json!({"error": reason})),
         ),
+        Err(WebhookError::Internal(reason)) => {
+            tracing::error!(reason, "webhook handler internal error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": "internal error"})),
+            )
+        }
     }
 }

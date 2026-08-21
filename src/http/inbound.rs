@@ -27,7 +27,7 @@ async fn handle_inbound_reply(
     let ctx = &state.ctx;
     let contact = crate::db::contacts::by_email(&ctx.pool, email)
         .await
-        .map_err(|e| rejected(&e.to_string()))?
+        .map_err(|e| WebhookError::Internal(e.to_string()))?
         .ok_or_else(|| rejected("no contact with that email"))?;
     let outcome = analyze_reply(
         &ctx.pool,
@@ -39,6 +39,6 @@ async fn handle_inbound_reply(
         InboundReply { subject, body },
     )
     .await
-    .map_err(|e| rejected(&e.to_string()))?;
-    serde_json::to_value(&outcome).map_err(|e| rejected(&e.to_string()))
+    .map_err(|e| WebhookError::Internal(e.to_string()))?;
+    serde_json::to_value(&outcome).map_err(|e| WebhookError::Internal(e.to_string()))
 }
