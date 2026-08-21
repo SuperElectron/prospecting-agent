@@ -45,6 +45,36 @@ pub async fn insert(pool: &PgPool, engagement: &Engagement) -> Result<bool, DbEr
     Ok(result.rows_affected() > 0)
 }
 
+pub struct DomainTouch {
+    pub touched: i64,
+    pub oldest: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub async fn recent_outbound_contacts_for_domain(
+    pool: &PgPool,
+    domain: &str,
+    window_days: i32,
+    excluding_contact: Option<Uuid>,
+) -> Result<DomainTouch, DbError> {
+    let row = sqlx::query(
+        "SELECT COUNT(DISTINCT e.contact_id) AS touched, MIN(e.occurred_at) AS oldest \
+         FROM engagements e \
+         JOIN contacts c ON c.id = e.contact_id \
+         WHERE c.company_domain = $1 AND e.direction = 'outbound' AND e.kind = 'sent' \
+         AND e.occurred_at > now() - make_interval(days => $2) \
+         AND ($3::uuid IS NULL OR e.contact_id <> $3)",
+    )
+    .bind(crate::domain::normalize_domain(domain))
+    .bind(window_days)
+    .bind(excluding_contact)
+    .fetch_one(pool)
+    .await?;
+    Ok(DomainTouch {
+        touched: row.get("touched"),
+        oldest: row.get("oldest"),
+    })
+}
+
 pub async fn for_contact(pool: &PgPool, contact_id: Uuid, limit: i64) -> Result<Vec<Engagement>, DbError> {
     let rows =
         sqlx::query("SELECT * FROM engagements WHERE contact_id = $1 ORDER BY occurred_at DESC LIMIT $2")
