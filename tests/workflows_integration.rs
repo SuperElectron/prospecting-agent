@@ -1,8 +1,10 @@
+use std::fmt::Write;
+
 use prospecting_agent::config::MemoryConfig;
 use prospecting_agent::db;
 use prospecting_agent::domain::{Signal, SignalKind, SignalStrength};
 use prospecting_agent::memory::MemoryClient;
-use prospecting_agent::workflows::sync::{ingest_person, ingest_signal, sync_dir};
+use prospecting_agent::workflows::sync::{RowSkip, SkipKind, ingest_person, ingest_signal, sync_dir};
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -93,6 +95,8 @@ async fn csv_sync_lands_all_three_files_and_reruns_are_stable() {
 
     let again = sync_dir(&pool, &memory, &dir).await.unwrap();
     assert_eq!(again.contacts_upserted, 1);
+    assert_eq!(again.notes_memorized, 0);
+    assert_eq!(again.notes_already_imported, 1);
     let company = db::companies::by_domain(&pool, &domain).await.unwrap().unwrap();
     assert_eq!(company.employee_count, Some(120));
     let contact = db::contacts::by_email(&pool, &email).await.unwrap().unwrap();
@@ -122,14 +126,22 @@ async fn malformed_rows_skip_with_reasons_and_good_rows_still_land() {
     assert_eq!(report.companies_upserted, 1);
     assert_eq!(report.contacts_upserted, 0);
     assert_eq!(report.skipped.len(), 3);
-    assert!(report.skipped.iter().any(|s| s.reason.contains("empty domain")));
-    assert!(report.skipped.iter().any(|s| s.reason.contains("not a number")));
+    assert!(report.skipped.contains(&RowSkip {
+        file: "companies.csv",
+        line: 3,
+        kind: SkipKind::Data,
+        reason: "empty domain".into(),
+    }));
     assert!(
         report
             .skipped
             .iter()
-            .any(|s| s.reason.contains("implausible email"))
+            .any(|s| s.file == "companies.csv" && s.line == 4 && s.reason.contains("not a number"))
     );
+    assert!(report.skipped.iter().any(|s| s.file == "contacts.csv"
+        && s.line == 2
+        && s.kind == SkipKind::Data
+        && s.reason.contains("implausible email")));
     assert!(db::companies::by_domain(&pool, &good).await.unwrap().is_some());
 }
 
@@ -155,6 +167,87 @@ async fn memory_backend_failure_skips_notes_but_keeps_the_batch_alive() {
     let report = sync_dir(&pool, &memory_client(&server), &dir).await.unwrap();
     assert_eq!(report.notes_memorized, 0);
     assert_eq!(report.skipped.len(), 2);
+    assert!(report.skipped.iter().all(|s| s.kind == SkipKind::Backend));
+    assert!(report.fatal.is_none());
+}
+
+#[tokio::test]
+async fn repeated_backend_failures_stop_the_note_import_with_a_fatal_report() {
+    let pool = require_pool!();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/memories/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"error": "Memory client is not available"})),
+        )
+        .mount(&server)
+        .await;
+    let domain = unique_domain("fatal");
+    let mut rows = String::from("company_domain,note,noted_at\n");
+    for i in 0..5 {
+        let _ = writeln!(rows, "{domain},Note number {i},2026-08-0{}", i + 1);
+    }
+    let dir = write_dir(&[("notes.csv", &rows)]);
+    let report = sync_dir(&pool, &memory_client(&server), &dir).await.unwrap();
+    assert_eq!(report.skipped.len(), 3);
+    assert!(report.fatal.is_some());
+}
+
+#[tokio::test]
+async fn reimport_preserves_enrichment_and_pipeline_state() {
+    let pool = require_pool!();
+    let server = MockServer::start().await;
+    mount_memorize_ok(&server).await;
+    let domain = unique_domain("preserve");
+    let email = format!("keep-{}@{domain}", uuid::Uuid::new_v4().simple());
+    let dir = write_dir(&[
+        (
+            "companies.csv",
+            &format!(
+                "domain,name,industry,employee_count,location
+{domain},Keeper,,50,
+"
+            ),
+        ),
+        (
+            "contacts.csv",
+            &format!(
+                "email,first_name,last_name,title,company_domain,linkedin_url
+{email},Kai,,,,
+"
+            ),
+        ),
+    ]);
+    let memory = memory_client(&server);
+    sync_dir(&pool, &memory, &dir).await.unwrap();
+
+    let mut company = db::companies::by_domain(&pool, &domain).await.unwrap().unwrap();
+    company.summary = Some("hand-written research summary".into());
+    company.icp_fit_score = Some(88);
+    db::companies::upsert(&pool, &company).await.unwrap();
+    let mut contact = db::contacts::by_email(&pool, &email).await.unwrap().unwrap();
+    contact.status = prospecting_agent::domain::ContactStatus::InSequence;
+    contact.score = Some(77);
+    contact.assigned_sender = Some("sales@ours.io".into());
+    db::contacts::upsert(&pool, &contact).await.unwrap();
+
+    sync_dir(&pool, &memory, &dir).await.unwrap();
+    let company_after = db::companies::by_domain(&pool, &domain).await.unwrap().unwrap();
+    assert_eq!(
+        company_after.summary.as_deref(),
+        Some("hand-written research summary")
+    );
+    assert_eq!(company_after.icp_fit_score, Some(88));
+    assert_eq!(company_after.employee_count, Some(50));
+    let contact_after = db::contacts::by_email(&pool, &email).await.unwrap().unwrap();
+    assert_eq!(
+        contact_after.status,
+        prospecting_agent::domain::ContactStatus::InSequence
+    );
+    assert_eq!(contact_after.score, Some(77));
+    assert_eq!(contact_after.assigned_sender.as_deref(), Some("sales@ours.io"));
+    assert_eq!(contact_after.first_name.as_deref(), Some("Kai"));
 }
 
 #[tokio::test]

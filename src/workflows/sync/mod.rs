@@ -1,7 +1,7 @@
 pub mod csv;
 pub mod ingest;
 
-pub use csv::{CsvSyncReport, RowSkip, sync_dir};
+pub use csv::{CsvSyncReport, RowSkip, SkipKind, sync_dir};
 pub use ingest::{ingest_person, ingest_signal};
 
 #[derive(Debug, thiserror::Error)]

@@ -103,6 +103,62 @@ pub async fn upsert(pool: &PgPool, contact: &Contact) -> Result<Uuid, DbError> {
     }
 }
 
+const IMPORT_UPDATE_CLAUSE: &str = "first_name = COALESCE(EXCLUDED.first_name, contacts.first_name), \
+     last_name = COALESCE(EXCLUDED.last_name, contacts.last_name), \
+     title = COALESCE(EXCLUDED.title, contacts.title), \
+     linkedin_url = COALESCE(EXCLUDED.linkedin_url, contacts.linkedin_url), \
+     company_domain = COALESCE(EXCLUDED.company_domain, contacts.company_domain), \
+     updated_at = EXCLUDED.updated_at";
+
+pub async fn upsert_import(pool: &PgPool, contact: &Contact) -> Result<Uuid, DbError> {
+    let seniority = contact
+        .seniority
+        .as_ref()
+        .map(|s| enum_to_str(s, "contact.seniority"))
+        .transpose()?;
+    let source = enum_to_str(&contact.source, "contact.source")?;
+    let status = enum_to_str(&contact.status, "contact.status")?;
+    let sql = format!(
+        "INSERT INTO contacts (id, email, first_name, last_name, title, seniority, linkedin_url, \
+         company_domain, crm_id, source, score, status, assigned_sender, created_at, updated_at) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) \
+         ON CONFLICT (id) DO UPDATE SET {IMPORT_UPDATE_CLAUSE} \
+         RETURNING id"
+    );
+    let mut retried = false;
+    loop {
+        let id = resolve_id(pool, contact).await?;
+        let result = sqlx::query(&sql)
+            .bind(id)
+            .bind(&contact.email)
+            .bind(&contact.first_name)
+            .bind(&contact.last_name)
+            .bind(&contact.title)
+            .bind(seniority.as_deref())
+            .bind(&contact.linkedin_url)
+            .bind(
+                contact
+                    .company_domain
+                    .as_deref()
+                    .map(crate::domain::normalize_domain),
+            )
+            .bind(&contact.crm_id)
+            .bind(&source)
+            .bind(contact.score.map(i16::from))
+            .bind(&status)
+            .bind(&contact.assigned_sender)
+            .bind(contact.created_at)
+            .bind(contact.updated_at)
+            .fetch_one(pool)
+            .await;
+        match result {
+            Ok(row) => return Ok(row.get("id")),
+            Err(sqlx::Error::Database(db)) if !retried && db.is_unique_violation() => retried = true,
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
 pub async fn by_id(pool: &PgPool, id: Uuid) -> Result<Option<Contact>, DbError> {
     let row = sqlx::query("SELECT * FROM contacts WHERE id = $1")
         .bind(id)
