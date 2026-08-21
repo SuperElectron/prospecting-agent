@@ -14,6 +14,7 @@ pub struct EnrichmentReport {
     pub no_match: u64,
     pub skipped: u64,
     pub failed: u64,
+    pub credits_spent: u64,
 }
 
 pub async fn enrich_contacts(
@@ -21,25 +22,36 @@ pub async fn enrich_contacts(
     memory: &MemoryClient,
     apollo: &ApolloClient,
     limit: i64,
+    credits_left: &mut u16,
 ) -> Result<EnrichmentReport, SyncError> {
     let mut report = EnrichmentReport::default();
     let contacts = db::contacts::list_by_status(pool, ContactStatus::New, limit).await?;
     for contact in contacts {
+        if *credits_left == 0 {
+            break;
+        }
         let Some(email) = contact.email.as_deref() else {
+            db::contacts::advance_status(pool, contact.id, ContactStatus::New, ContactStatus::NoMatch)
+                .await?;
             report.skipped += 1;
             continue;
         };
+        *credits_left -= 1;
+        report.credits_spent += 1;
         match apollo.match_person(email).await {
             Ok(Some(person)) => {
                 ingest_person(pool, memory, &person).await?;
-                db::contacts::set_status(pool, contact.id, ContactStatus::Enriched).await?;
+                db::contacts::advance_status(pool, contact.id, ContactStatus::New, ContactStatus::Enriched)
+                    .await?;
                 report.enriched += 1;
             }
             Ok(None) => {
+                db::contacts::advance_status(pool, contact.id, ContactStatus::New, ContactStatus::NoMatch)
+                    .await?;
                 report.no_match += 1;
             }
             Err(e) => {
-                tracing::warn!(email, error = %e, "apollo person match failed");
+                tracing::warn!(contact = %contact.id, error = %e, "apollo person match failed");
                 report.failed += 1;
             }
         }
@@ -52,17 +64,31 @@ pub async fn enrich_companies(
     memory: &MemoryClient,
     apollo: &ApolloClient,
     limit: i64,
+    credits_left: &mut u16,
 ) -> Result<EnrichmentReport, SyncError> {
     let mut report = EnrichmentReport::default();
     let companies = db::companies::list_unenriched(pool, limit).await?;
     for company in companies {
+        if *credits_left == 0 {
+            break;
+        }
+        *credits_left -= 1;
+        report.credits_spent += 1;
         match apollo.enrich_organization(&company.domain).await {
             Ok(Some(organization)) => {
+                db::companies::mark_enrichment_attempted(pool, &company.domain).await?;
                 let Some(enriched) = company_from_organization(&organization) else {
                     report.no_match += 1;
                     continue;
                 };
-                db::companies::upsert(pool, &enriched).await?;
+                if enriched.domain != company.domain {
+                    tracing::warn!(
+                        queried = company.domain,
+                        canonical = enriched.domain,
+                        "apollo reports a different canonical domain"
+                    );
+                }
+                db::companies::upsert_enrichment(pool, &enriched).await?;
                 let line = company_line(&enriched);
                 if let Err(e) = memory
                     .memorize(&EntityRef::company(&enriched.domain), &line, false)
@@ -73,6 +99,7 @@ pub async fn enrich_companies(
                 report.enriched += 1;
             }
             Ok(None) => {
+                db::companies::mark_enrichment_attempted(pool, &company.domain).await?;
                 report.no_match += 1;
             }
             Err(e) => {

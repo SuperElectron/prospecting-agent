@@ -14,9 +14,9 @@ pub async fn ingest_person(
     person: &ApolloPerson,
 ) -> Result<Uuid, SyncError> {
     let contact = contact_from_person(person);
-    let contact_id = db::contacts::upsert(pool, &contact).await?;
+    let contact_id = db::contacts::upsert_enrichment(pool, &contact).await?;
     if let Some(company) = person.organization.as_ref().and_then(company_from_organization) {
-        db::companies::upsert(pool, &company).await?;
+        db::companies::upsert_enrichment(pool, &company).await?;
     }
     let line = enrichment_line(contact.title.as_deref(), contact.company_domain.as_deref());
     best_effort_memorize(memory, &EntityRef::Contact(contact_id), &line).await;

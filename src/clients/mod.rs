@@ -5,7 +5,7 @@ pub mod tavily;
 pub use apollo::{
     ApolloClient, ApolloError, ApolloOrganization, ApolloPerson, PeopleSearchParams, PeopleSearchResponse,
 };
-pub use mappers::{company_from_organization, contact_from_person};
+pub use mappers::{company_from_organization, contact_from_person, usable_email};
 pub use tavily::{
     SearchDepth, SearchOptions, SearchResponse, SearchResult, TavilyClient, TavilyError, Topic,
 };

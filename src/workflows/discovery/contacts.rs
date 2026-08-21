@@ -2,6 +2,7 @@ use serde::Serialize;
 use sqlx::PgPool;
 
 use crate::clients::apollo::{ApolloClient, PeopleSearchParams};
+use crate::clients::usable_email;
 use crate::config::IcpCriteria;
 use crate::db;
 use crate::domain::Seniority;
@@ -27,9 +28,23 @@ impl Default for DiscoveryBudget {
 pub struct DiscoveryReport {
     pub discovered: u64,
     pub already_known: u64,
+    pub no_match: u64,
     pub no_email: u64,
-    pub failed: u64,
+    pub search_failed: u64,
+    pub match_failed: u64,
     pub credits_spent: u64,
+}
+
+impl DiscoveryReport {
+    fn absorb(&mut self, other: &DiscoveryReport) {
+        self.discovered += other.discovered;
+        self.already_known += other.already_known;
+        self.no_match += other.no_match;
+        self.no_email += other.no_email;
+        self.search_failed += other.search_failed;
+        self.match_failed += other.match_failed;
+        self.credits_spent += other.credits_spent;
+    }
 }
 
 fn seniority_filters(minimum: Seniority) -> Vec<String> {
@@ -69,52 +84,81 @@ pub async fn discover_contacts(
         Ok(response) => response.people,
         Err(e) => {
             tracing::warn!(domain, error = %e, "apollo people search failed");
-            report.failed += 1;
+            report.search_failed += 1;
             return Ok(report);
         }
     };
+    let mut spent_this_account: u8 = 0;
     for candidate in candidates {
-        if report.discovered >= u64::from(budget.contacts_per_account) {
-            break;
-        }
-        if *credits_left == 0 {
+        if spent_this_account >= budget.contacts_per_account || *credits_left == 0 {
             break;
         }
         if candidate.id.is_empty() {
-            report.failed += 1;
+            report.match_failed += 1;
             continue;
         }
-        if db::contacts::by_crm_id(pool, &candidate.id).await?.is_some() {
-            report.already_known += 1;
-            continue;
+        match db::contacts::by_crm_id(pool, &candidate.id).await {
+            Ok(Some(_)) => {
+                report.already_known += 1;
+                continue;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(domain, error = %e, "crm id lookup failed");
+                report.match_failed += 1;
+                continue;
+            }
         }
         *credits_left -= 1;
+        spent_this_account += 1;
         report.credits_spent += 1;
         match apollo.match_person_by_id(&candidate.id).await {
             Ok(Some(person)) => {
-                let email = person.email.as_deref().unwrap_or_default();
-                if email.is_empty() {
-                    report.no_email += 1;
-                    continue;
+                if let Err(e) = land_person(pool, memory, &candidate.id, &person, &mut report).await {
+                    tracing::warn!(domain, error = %e, "landing a matched person failed");
+                    report.match_failed += 1;
                 }
-                if db::contacts::by_email(pool, email).await?.is_some() {
-                    report.already_known += 1;
-                    continue;
-                }
-                let contact_id = ingest_person(pool, memory, &person).await?;
-                db::contacts::set_status(pool, contact_id, crate::domain::ContactStatus::Enriched).await?;
-                report.discovered += 1;
             }
             Ok(None) => {
-                report.no_email += 1;
+                report.no_match += 1;
             }
             Err(e) => {
                 tracing::warn!(domain, candidate = candidate.id, error = %e, "apollo match failed");
-                report.failed += 1;
+                report.match_failed += 1;
             }
         }
     }
     Ok(report)
+}
+
+async fn land_person(
+    pool: &PgPool,
+    memory: &MemoryClient,
+    candidate_id: &str,
+    person: &crate::clients::ApolloPerson,
+    report: &mut DiscoveryReport,
+) -> Result<(), SyncError> {
+    let Some(email) = usable_email(person.email.as_deref()) else {
+        report.no_email += 1;
+        return Ok(());
+    };
+    if let Some(existing) = db::contacts::by_email(pool, email).await? {
+        if existing.crm_id.is_none() {
+            db::contacts::set_crm_id(pool, existing.id, candidate_id).await?;
+        }
+        report.already_known += 1;
+        return Ok(());
+    }
+    let contact_id = ingest_person(pool, memory, person).await?;
+    db::contacts::advance_status(
+        pool,
+        contact_id,
+        crate::domain::ContactStatus::New,
+        crate::domain::ContactStatus::Enriched,
+    )
+    .await?;
+    report.discovered += 1;
+    Ok(())
 }
 
 pub async fn source_contacts(
@@ -132,11 +176,7 @@ pub async fn source_contacts(
             break;
         }
         let report = discover_contacts(pool, memory, apollo, icp, domain, budget, &mut credits_left).await?;
-        total.discovered += report.discovered;
-        total.already_known += report.already_known;
-        total.no_email += report.no_email;
-        total.failed += report.failed;
-        total.credits_spent += report.credits_spent;
+        total.absorb(&report);
     }
     Ok(total)
 }
