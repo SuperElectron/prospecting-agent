@@ -1,3 +1,4 @@
+pub mod inbound;
 pub mod runtime;
 pub mod tasks;
 
@@ -23,6 +24,7 @@ pub enum JobKind {
     EnrichCompanies,
     ResearchCompanies,
     DetectSignals,
+    ReplyMonitor,
     OutreachSequence,
     OutreachSend,
     TaskExecutor,
@@ -31,13 +33,14 @@ pub enum JobKind {
 }
 
 impl JobKind {
-    pub const ALL: [JobKind; 11] = [
+    pub const ALL: [JobKind; 12] = [
         JobKind::CsvSync,
         JobKind::DiscoverContacts,
         JobKind::EnrichContacts,
         JobKind::EnrichCompanies,
         JobKind::ResearchCompanies,
         JobKind::DetectSignals,
+        JobKind::ReplyMonitor,
         JobKind::OutreachSequence,
         JobKind::OutreachSend,
         JobKind::TaskExecutor,
@@ -53,6 +56,7 @@ impl JobKind {
             JobKind::EnrichCompanies => "enrich_companies",
             JobKind::ResearchCompanies => "research_companies",
             JobKind::DetectSignals => "detect_signals",
+            JobKind::ReplyMonitor => "reply_monitor",
             JobKind::OutreachSequence => "outreach_sequence",
             JobKind::OutreachSend => "outreach_send",
             JobKind::TaskExecutor => "task_executor",
@@ -217,6 +221,10 @@ pub async fn run_job(ctx: &JobContext, kind: JobKind) -> Result<serde_json::Valu
                 limit: SEND_LIMIT,
             };
             let report = outreach::run_send_pass(&ctx.pool, &inputs, chrono::Utc::now()).await?;
+            Ok(serde_json::to_value(report)?)
+        }
+        JobKind::ReplyMonitor => {
+            let report = inbound::poll_replies(ctx).await?;
             Ok(serde_json::to_value(report)?)
         }
         JobKind::TaskExecutor => {

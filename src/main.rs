@@ -136,11 +136,9 @@ async fn serve(port: u16) -> Result<(), String> {
     let queue = prospecting_agent::jobs::runtime::storage(ctx.config.database_url.expose())
         .await
         .map_err(|e| e.to_string())?;
-    let state = std::sync::Arc::new(prospecting_agent::http::AppState::new(
-        ctx,
-        queue,
-        prospecting_agent::http::webhooks::WebhookRegistry::default(),
-    ));
+    let mut webhooks = prospecting_agent::http::webhooks::WebhookRegistry::default();
+    prospecting_agent::http::inbound::register(&mut webhooks);
+    let state = std::sync::Arc::new(prospecting_agent::http::AppState::new(ctx, queue, webhooks));
     prospecting_agent::http::serve(state, port)
         .await
         .map_err(|e| e.to_string())

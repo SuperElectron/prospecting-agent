@@ -1,4 +1,5 @@
 pub mod control;
+pub mod inbound;
 pub mod webhooks;
 
 use std::collections::HashSet;
