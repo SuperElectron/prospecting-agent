@@ -49,6 +49,50 @@ async fn contact_upsert_roundtrip_and_status_update() {
 }
 
 #[tokio::test]
+async fn contact_reimport_with_new_uuid_updates_by_email() {
+    let pool = require_pool!();
+    let email = format!("dupe-{}@example.com", uuid::Uuid::new_v4());
+    let mut first = Contact::new(ContactSource::Csv);
+    first.email = Some(email.clone());
+    let persisted_id = db::contacts::upsert(&pool, &first).await.unwrap();
+    let mut second = Contact::new(ContactSource::Apollo);
+    second.email = Some(email.clone());
+    second.title = Some("CRO".into());
+    let resolved_id = db::contacts::upsert(&pool, &second).await.unwrap();
+    assert_eq!(persisted_id, resolved_id);
+    let loaded = db::contacts::by_email(&pool, &email).await.unwrap().unwrap();
+    assert_eq!(loaded.id, persisted_id);
+    assert_eq!(loaded.title.as_deref(), Some("CRO"));
+}
+
+#[tokio::test]
+async fn company_reupsert_returns_the_persisted_id() {
+    let pool = require_pool!();
+    let domain = format!("idkeep-{}.example.com", uuid::Uuid::new_v4());
+    let first = Company::new(domain.clone());
+    let persisted_id = db::companies::upsert(&pool, &first).await.unwrap();
+    assert_eq!(persisted_id, first.id);
+    let second = Company::new(domain.clone());
+    let resolved_id = db::companies::upsert(&pool, &second).await.unwrap();
+    assert_eq!(resolved_id, persisted_id);
+    assert_ne!(resolved_id, second.id);
+}
+
+#[tokio::test]
+async fn duplicate_engagement_delivery_is_ignored() {
+    let pool = require_pool!();
+    let contact = Contact::new(ContactSource::Csv);
+    db::contacts::upsert(&pool, &contact).await.unwrap();
+    let event = Engagement::outbound(contact.id, Channel::Email, EngagementKind::Opened);
+    db::engagements::insert(&pool, &event).await.unwrap();
+    let mut redelivered = event.clone();
+    redelivered.id = uuid::Uuid::new_v4();
+    db::engagements::insert(&pool, &redelivered).await.unwrap();
+    let history = db::engagements::for_contact(&pool, contact.id, 10).await.unwrap();
+    assert_eq!(history.len(), 1);
+}
+
+#[tokio::test]
 async fn company_upsert_is_idempotent_by_domain() {
     let pool = require_pool!();
     let mut company = Company::new(format!("it-{}.example.com", uuid::Uuid::new_v4()));

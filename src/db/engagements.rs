@@ -15,7 +15,13 @@ fn from_row(row: &PgRow) -> Result<Engagement, DbError> {
         body: row.get("body"),
         sequence_step: row
             .get::<Option<i16>, _>("sequence_step")
-            .and_then(|s| u8::try_from(s).ok()),
+            .map(|s| {
+                u8::try_from(s).map_err(|_| DbError::Codec {
+                    context: "engagement.sequence_step",
+                    reason: format!("{s} out of range"),
+                })
+            })
+            .transpose()?,
         occurred_at: row.get("occurred_at"),
     })
 }
@@ -23,7 +29,7 @@ fn from_row(row: &PgRow) -> Result<Engagement, DbError> {
 pub async fn insert(pool: &PgPool, e: &Engagement) -> Result<(), DbError> {
     sqlx::query(
         "INSERT INTO engagements (id, contact_id, channel, direction, kind, subject, body, \
-         sequence_step, occurred_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+         sequence_step, occurred_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING",
     )
     .bind(e.id)
     .bind(e.contact_id)

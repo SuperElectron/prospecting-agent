@@ -6,7 +6,7 @@ CREATE TABLE engagements (
     kind TEXT NOT NULL,
     subject TEXT,
     body TEXT,
-    sequence_step SMALLINT,
+    sequence_step SMALLINT CHECK (sequence_step BETWEEN 0 AND 255),
     occurred_at TIMESTAMPTZ NOT NULL
 );
 
@@ -27,8 +27,8 @@ CREATE INDEX signals_domain_idx ON signals (company_domain, detected_at DESC);
 CREATE TABLE sequence_states (
     contact_id UUID PRIMARY KEY REFERENCES contacts (id) ON DELETE CASCADE,
     cadence TEXT NOT NULL,
-    current_step SMALLINT NOT NULL,
-    max_steps SMALLINT NOT NULL,
+    current_step SMALLINT NOT NULL CHECK (current_step BETWEEN 0 AND 255),
+    max_steps SMALLINT NOT NULL CHECK (max_steps BETWEEN 0 AND 255),
     last_sent_at TIMESTAMPTZ,
     stopped BOOLEAN NOT NULL,
     stop_reason TEXT
@@ -54,3 +54,5 @@ CREATE TABLE send_capacity (
     sent INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (sender, day)
 );
+
+CREATE UNIQUE INDEX engagements_dedupe_idx ON engagements (contact_id, channel, kind, occurred_at);

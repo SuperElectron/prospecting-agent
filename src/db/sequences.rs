@@ -12,8 +12,14 @@ fn from_row(row: &PgRow) -> Result<SequenceState, DbError> {
     Ok(SequenceState {
         contact_id: row.get("contact_id"),
         cadence: row.get("cadence"),
-        current_step: u8::try_from(row.get::<i16, _>("current_step")).unwrap_or(0),
-        max_steps: u8::try_from(row.get::<i16, _>("max_steps")).unwrap_or(0),
+        current_step: u8::try_from(row.get::<i16, _>("current_step")).map_err(|_| DbError::Codec {
+            context: "sequence.current_step",
+            reason: "out of range".into(),
+        })?,
+        max_steps: u8::try_from(row.get::<i16, _>("max_steps")).map_err(|_| DbError::Codec {
+            context: "sequence.max_steps",
+            reason: "out of range".into(),
+        })?,
         last_sent_at: row.get("last_sent_at"),
         stopped: row.get("stopped"),
         stop_reason,
