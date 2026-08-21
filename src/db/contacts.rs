@@ -47,7 +47,7 @@ async fn resolve_id(pool: &PgPool, contact: &Contact) -> Result<Uuid, DbError> {
     let Some(email) = &contact.email else {
         return Ok(contact.id);
     };
-    let existing = sqlx::query_scalar::<_, Uuid>("SELECT id FROM contacts WHERE email = $1")
+    let existing = sqlx::query_scalar::<_, Uuid>("SELECT id FROM contacts WHERE lower(email) = $1")
         .bind(crate::domain::normalize_email(email))
         .fetch_optional(pool)
         .await?;
@@ -260,7 +260,7 @@ pub async fn by_crm_id(pool: &PgPool, crm_id: &str) -> Result<Option<Contact>, D
 }
 
 pub async fn by_email(pool: &PgPool, email: &str) -> Result<Option<Contact>, DbError> {
-    let row = sqlx::query("SELECT * FROM contacts WHERE email = $1")
+    let row = sqlx::query("SELECT * FROM contacts WHERE lower(email) = $1")
         .bind(crate::domain::normalize_email(email))
         .fetch_optional(pool)
         .await?;
