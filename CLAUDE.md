@@ -29,7 +29,7 @@ One issue per feature group. Add each issue to the project board
 - Milestones tagged v0.1.0…v1.0.0 on main, CHANGELOG entry each.
 
 ## Code rules
-- No code comments. Files <400 lines (500 hard cap). I/O behind traits. thiserror per module.
+- No code comments. Keep files small — aim under 400 lines, ~500 is a guideline not a hard cap; when a file grows, split it into smaller parts. I/O behind traits. thiserror per module.
 - No code text copied from .cache/revenue-os — genuine reimplementation only.
 - No vendor branding in identifiers or docs.
 - Plan of record: wiki (Architecture, Development-Plan) + .cache/commit-plan.md (detail).
