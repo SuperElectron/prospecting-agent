@@ -368,3 +368,25 @@ async fn companies_without_contacts_rank_by_icp_score_with_cooldown_and_exclusio
     assert!(high_pos < low_pos);
     assert!(low_pos < unscored_pos);
 }
+
+#[tokio::test]
+async fn discovery_listing_breaks_score_ties_by_oldest_and_honors_limit() {
+    let pool = require_pool!();
+    let stamp = uuid::Uuid::new_v4().simple().to_string();
+    let older = format!("tie-older-{stamp}.example.com");
+    let newer = format!("tie-newer-{stamp}.example.com");
+    for domain in [&older, &newer] {
+        let mut company = Company::new(domain);
+        company.icp_fit_score = Some(88);
+        db::companies::upsert(&pool, &company).await.unwrap();
+    }
+    let listed = db::companies::list_without_contacts(&pool, 100_000)
+        .await
+        .unwrap();
+    let older_pos = listed.iter().position(|company| company.domain == older).unwrap();
+    let newer_pos = listed.iter().position(|company| company.domain == newer).unwrap();
+    assert!(older_pos < newer_pos);
+
+    let capped = db::companies::list_without_contacts(&pool, 1).await.unwrap();
+    assert_eq!(capped.len(), 1);
+}
