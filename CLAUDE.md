@@ -27,7 +27,9 @@ never close an issue with unchecked boxes for work that was done.
 ## Workflow
 - `main` ← `staging` ← `feature/*`. One PR per feature group. Never commit directly to staging/main.
 - Gate per PR: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`.
-- Review pass (code-reviewer agent) on every PR before merge.
+- Review pass (code-reviewer agent) on every PR before merge. Reviewers and authors apply the
+  Canonical Rust standard via the `rust-review` skill (.claude/skills/rust-review/SKILL.md);
+  full reference is the local clone at .cache/rust-best-practices (never fetch the website).
 - Milestones tagged v0.1.0…v1.0.0 on main, CHANGELOG entry each.
 
 ## Code rules
