@@ -994,12 +994,14 @@ async fn account_strategy_persists_assessment_from_db_context() {
     db::contacts::upsert(&pool, &contact).await.unwrap();
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
-            "stage": "engaged",
-            "health": "watch",
-            "coordination_flags": ["carpet_bomb_risk", "made_up_flag"],
-            "summary": "Two active threads; coordinate before adding more.",
-        }))))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(completion_with(&serde_json::json!({
+                "stage": "engaged",
+                "health": "watch",
+                "coordination_flags": ["carpet_bomb_risk", "made_up_flag"],
+                "summary": "Two active threads; coordinate before adding more.",
+            }))),
+        )
         .expect(1)
         .mount(&llm_server)
         .await;
@@ -1032,15 +1034,13 @@ async fn preflight_delays_on_carpet_bomb_when_recent_sends_hit_the_cap() {
     };
     db::strategies::upsert(&pool, &strategy).await.unwrap();
     for step in 0..2u8 {
-        let mut touched = prospecting_agent::domain::Contact::new(prospecting_agent::domain::ContactSource::Csv);
+        let mut touched =
+            prospecting_agent::domain::Contact::new(prospecting_agent::domain::ContactSource::Csv);
         touched.email = Some(format!("t{step}-{}@{domain}", uuid::Uuid::new_v4().simple()));
         touched.company_domain = Some(domain.clone());
         db::contacts::upsert(&pool, &touched).await.unwrap();
-        let mut sent = prospecting_agent::domain::Engagement::outbound(
-            touched.id,
-            Channel::Email,
-            EngagementKind::Sent,
-        );
+        let mut sent =
+            prospecting_agent::domain::Engagement::outbound(touched.id, Channel::Email, EngagementKind::Sent);
         sent.sequence_step = Some(step);
         db::engagements::insert(&pool, &sent).await.unwrap();
     }
