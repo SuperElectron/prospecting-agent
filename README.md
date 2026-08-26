@@ -1,13 +1,12 @@
 # Prospecting Agent
 
-Finds your next customers, researches them, writes the email, sends it, and
-handles the reply — every morning, before you sit down.
+Finds your next customers, researches meeting notes, writes the email, sends it, and
+handles the reply.
 
-It runs on the machine on your desk. A Mac mini is enough; a DGX Spark is
-plenty. Your own model does the writing, so there's no seat license and no
-per-lead token bill, and your pipeline never leaves the building.
+Runs on your laptop, and compatible with DGX spark (see [dgx-model-serve](https://github.com/SuperElectron/dgx-model-serve)) for local inference.
 
-What it plugs into:
+
+Configure the agent to gain access to:
 
 - **Apollo** — finds contacts and companies, fills in what's missing
 - **Tavily** — reads up on the account and catches buying signals
