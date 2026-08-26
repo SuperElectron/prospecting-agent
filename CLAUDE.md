@@ -36,7 +36,7 @@ never close an issue with unchecked boxes for work that was done.
 - Review pass (code-reviewer agent) on every PR before merge. Reviewers and authors apply the
   Canonical Rust standard via the `rust-review` skill (.claude/skills/rust-review/SKILL.md);
   full reference is the local clone at .cache/rust-best-practices (never fetch the website).
-- Milestones tagged v0.1.0…v1.0.0 on main, CHANGELOG entry each.
+- Milestones tagged v0.1.0…v1.0.0 on main.
 - Milestone review: before each staging → main PR, run a dedicated review sweep of the full
   staging-vs-main diff against the rust-review standard; land findings as a `refactor:` commit
   before merging and tagging.
