@@ -1,14 +1,76 @@
 # Prospecting Agent
 
-An open-source AI prospecting agent that finds leads, researches them, and runs personalized multi-channel outreach on autopilot. 
-- One Rust binary + Postgres + Mem0
-- Everything runs locally, deployable anywhere.
-- Bring your own CRM (HubSpot or plain CSV) and your own API keys. 
-- All LLM work runs against a local OpenAI-compatible endpoint.
+Finds your next customers, researches meeting notes, writes the email, sends it, and
+handles the reply.
 
-**Built with a DGX Spark running gpt-oss-120B.**
+Runs on your laptop, and compatible with DGX spark (see [dgx-model-serve](https://github.com/SuperElectron/dgx-model-serve)) for local inference.
 
+
+Configure the agent to gain access to:
+
+- **Apollo** — finds contacts and companies, fills in what's missing
+- **Tavily** — reads up on the account and catches buying signals
+- **Your local LLM** — writes every email (OpenAI-compatible; gpt-oss-120B here)
+- **Gmail or SendGrid** — sends it, then watches for the reply
+- **HubSpot or a CSV folder** — bring a CRM, or don't
+
+All you have to do is bring your API keys, fill in `.env`, and run it!
+
+---
+
+# Table of contents
+
+1. [A day of it](#a-day-of-it)
+2. [Quickstart](#quickstart)
+3. [Integrations](#integrations)
+4. [Docs](#docs)
+5. [License](#license)
+
+
+<a name="a-day-of-it"></a>
+## A day of it
+
+---
+
+The worker keeps its own schedule. You do not start anything by hand.
+
+| Time (UTC) | What happens |
+|---|---|
+| 06:00 | New contacts in `data/` are imported |
+| 06:30 / 06:40 | Contacts and companies enriched |
+| 06:45 | New contacts discovered at target accounts |
+| 07:00 | Companies researched |
+| 07:15 | Contacts enrolled in an outreach sequence |
+| 08:00 | Buying signals detected |
+| hourly | Email sent — only inside your cadence windows |
+| hourly | Replies read and classified, follow-up tasks run |
+| 16:30 | Daily digest, after the send window closes |
+| Mon 09:00 | Weekly report |
+
+Nothing is sent until you say so — `DRY_RUN=true` is the default. Apollo spend
+sits under a daily credit cap you set, with a per-run budget on top of it.
+
+<a name="quickstart"></a>
+## Quickstart
+
+---
+
+```sh
+./scripts/setup.sh                              # deps, services, build, tests
+# fill in your API keys in .env
+prospecting-agent gmail-auth --daily-limit 25   # authorize a sending account
+prospecting-agent health                        # db, LLM, memory, gmail, capacity
+prospecting-agent worker                        # run it
+```
+
+`prospecting-agent serve` adds a local control API for running a job now,
+checking a contact, or posting an inbound reply. See
+[Operations](docs/operations.md).
+
+<a name="integrations"></a>
 ## Integrations
+
+---
 
 | Integration | Role | Required |
 |---|---|---|
@@ -24,24 +86,20 @@ An open-source AI prospecting agent that finds leads, researches them, and runs 
 | Slack | Rep notifications, digests, error alerts | Planned (M6) |
 | [HeyReach](https://heyreach.io) | LinkedIn outreach | Optional (off by default) |
 
+<a name="docs"></a>
 ## Docs
+
+---
 
 - [Setup](docs/setup.md) — fresh clone to green gates
 - [Architecture](docs/architecture.md) — layers, invariants, queue isolation ([diagram](docs/architecture.svg))
 - [Operations](docs/operations.md) — schedules, control API, spend controls, failure playbook
 - [Contributing](CONTRIBUTING.md)
 - [Wiki](https://github.com/SuperElectron/prospecting-agent/wiki) — plan of record
-- Run `./scripts/setup.sh` on a fresh clone.
 
-## Usage
-
-```sh
-prospecting-agent gmail-auth   # authorize a sending account (browser consent)
-prospecting-agent health      # probe db, LLM, memory, gmail, capacity
-prospecting-agent sync-csv    # import data/ into Postgres and memory
-```
-- Read [settings.example.json](.claude/settings.example.json) for how to plug in your API keys.
-
+<a name="license"></a>
 ## License
+
+---
 
 MIT: [LICENSE](LICENSE).
