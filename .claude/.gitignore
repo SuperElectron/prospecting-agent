@@ -2,3 +2,4 @@ settings.local.json
 secrets/
 worktrees/
 vault-key.json
+scheduled_tasks.lock
