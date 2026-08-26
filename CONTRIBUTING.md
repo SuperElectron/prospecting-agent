@@ -3,9 +3,9 @@
 ## Workflow
 
 `main` <- `staging` <- `feature/*`. One PR per feature group, into staging.
-Never commit directly to staging or main. Milestones tag `v0.x.0` on main with
-a CHANGELOG entry; before each staging->main merge, a milestone review sweep
-runs over the full diff.
+Never commit directly to staging or main. Milestones tag `v0.x.0` on main;
+before each staging->main merge, a milestone review sweep runs over the full
+diff.
 
 ## Gate
 
